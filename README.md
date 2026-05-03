@@ -1,57 +1,56 @@
 # LocalLingua
 
-Selbst gehostete Live-Übersetzung für Großevents. Übersetzer streamen Audio aus dem Browser, Hörer öffnen eine Webseite und drücken auf ▶︎ — keine Anmeldung, keine App. Ziel-Latenz im LAN: < 300 ms.
+Self-hosted live translation for large events. Translators stream audio from the browser, listeners open a website and press ▶︎ — no registration, no app. Target latency in LAN: < 300 ms.
 
-Stack: LiveKit (WebRTC-SFU) · Node + Fastify (Tokens) · Vite + Vanilla TS (Frontend) · Caddy (HTTPS-Proxy). Alles läuft auf einem MacBook im Event-LAN.
+Stack: LiveKit (WebRTC-SFU) · Node + Fastify (Tokens) · Vite + Vanilla TS (Frontend) · Caddy (HTTPS-Proxy). Everything runs on a Mac/PC in the event LAN.
 
-## Erstes Setup
+## First Setup
 
 ```bash
-./scripts/install-mac.sh    # Homebrew-Pakete + npm install + .env anlegen
-$EDITOR .env                # ADMIN_PASSWORD setzen, Sprachen anpassen
+./scripts/install-mac.sh    # Install Homebrew packages + npm install + create .env
+$EDITOR .env                # Set ADMIN_PASSWORD, adjust languages
 ```
 
-## Eventtag
+## Event Day
 
-1. MacBook per **Ethernet (USB-C-Adapter)** ans Event-Netz, **Strom** anschließen.
-2. `./scripts/start.sh` — startet LiveKit, Backend, Frontend, Caddy. Fragt einmal nach `sudo` (für Port 443), dann `caffeinate` hält das System wach.
-3. Admin: `https://<lan-ip>/admin.html` öffnen, mit `ADMIN_PASSWORD` einloggen, **für jeden Übersetzer einen Code** generieren (Sprache + Name → 6-stelliger Code).
-4. In einem anderen Terminal: `./scripts/show-url.sh` — zeigt URL + QR-Code für die Hörer.
-5. Übersetzer öffnen `https://<lan-ip>/translator.html`, geben **nur den Code** ein, klicken Verbinden.
+1. Connect host to the event network via **Ethernet (USB-C adapter)**, connect **power**.
+2. `./scripts/start.sh` — starts LiveKit, backend, frontend, Caddy. Asks once for `sudo` (for port 443), then `caffeinate` keeps the system awake.
+3. Admin: Open `https://<lan-ip>/admin.html`, log in with `ADMIN_PASSWORD`, generate **a code for each translator** (Language + Name → 6-digit code).
+4. In another terminal: `./scripts/show-url.sh` — shows URL + QR code for the listeners.
+5. Translators open `https://<lan-ip>/translator.html`, enter **only the code**, click connect.
 
-## Was die Hörer machen
+## What the Listeners Do
 
-1. Webseite öffnen, Zertifikat einmal akzeptieren (Caddy `tls internal`, kein Internet nötig).
-2. Sprache (mit Flagge) wählen, ▶ drücken — fertig.
-3. Sobald der Übersetzer broadcastet, erscheint „🇬🇧 Anna is translating for you".
+1. Open website, accept certificate once (Caddy `tls internal`, no internet needed).
+2. Choose language (with flag), press ▶ — done.
+3. As soon as the translator broadcasts, "🇬🇧 Anna is translating for you" appears.
 
-## Wie die Auth läuft
+## How Auth Works
 
-- **Hörer**: Backend gibt jedem anonym ein subscribe-only-JWT für genau einen Raum.
-- **Übersetzer**: Code (6-stellig) → Backend prüft + gibt publish-JWT mit Name & Sprache aus dem Code-Eintrag.
-- **Admin**: Bearer-Token gegen `ADMIN_PASSWORD`. Codes werden in `backend/data/codes.json` persistiert (überlebt Restarts).
-- LiveKit-API-Key/Secret bleiben auf dem Server; das Frontend bekommt nur kurzlebige JWTs.
+- **Listeners**: Backend anonymously issues a subscribe-only JWT to everyone for exactly one room.
+- **Translators**: Code (6-digit) → Backend verifies + issues a publish JWT with name & language from the code entry.
+- **Admin**: Bearer token against `ADMIN_PASSWORD`. Codes are persisted in `backend/data/codes.json` (survives restarts).
+- LiveKit API key/secret remain on the server; the frontend only gets short-lived JWTs.
 
-## Sprachen ändern
+## Changing Languages
 
 In `.env`:
-
 ```
 LANGUAGES=en,fr,es,de
 LANGUAGE_NAMES='{"en":"English","fr":"Français","es":"Español","de":"Deutsch"}'
-# Optional, sonst Defaults pro ISO-Code:
+# Optional, otherwise defaults per ISO code:
 LANGUAGE_FLAGS='{"en":"🇬🇧🇺🇸"}'
 ```
 
-Backend neu starten (`Ctrl+C` und `start.sh` erneut, oder im overmind-Terminal `overmind restart backend`).
+Restart backend (`Ctrl+C` and `start.sh` again, or in the overmind terminal `overmind restart backend`).
 
-## Hintergrundbild ändern
+## Changing the Background Image
 
-In der Admin-UI (`/admin.html`) → Block „Background image" → Datei wählen → Upload. Fallback ist `frontend/public/bg.jpg`. Reset-Button stellt das Default wieder her.
+In the admin UI (`/admin.html`) → "Background image" block → choose file → Upload. Fallback is `frontend/public/bg.jpg`. Reset button restores the default.
 
-## Latenz testen
+## Testing Latency
 
-In einem zweiten Terminal:
+In a second terminal:
 
 ```bash
 livekit-cli load-test \
@@ -60,24 +59,24 @@ livekit-cli load-test \
   --room lang-en --subscribers 200 --duration 60s
 ```
 
-Ziel auf M-Serie: < 30 % CPU, glatter Audio-Verlauf bei 200+ Subscribern.
+Target on M-series: < 30% CPU, smooth audio with 200+ subscribers.
 
 ## Troubleshooting
 
-- **Hörer hört nichts** → ▶︎ erneut tippen. Auf iOS startet Audio erst nach Touch (Browser-Policy).
-- **„Mikrofon-Zugriff verweigert"** beim Übersetzer → macOS-Systemeinstellungen ▸ Datenschutz ▸ Mikrofon → Browser zulassen. Browser braucht zusätzlich HTTPS — `localhost` und Caddys interne CA sind beide OK.
-- **Hörer-Gerät kann sich nicht verbinden** → Caddys Cert akzeptieren (Browser-Warnung „Erweitert ▸ trotzdem fortfahren"). Alternativ den Caddy-Root einmal verteilen: `cat ~/Library/Application\ Support/Caddy/pki/authorities/local/root.crt`.
-- **Audio bricht ab** → Event-WLAN hat zu wenig Bandbreite. Bei 500 Hörern × 50 kbit/s = 25 Mbit/s. Ethernet zwischen MacBook und WLAN-Access-Points nutzen, nicht das Mac selbst per WLAN.
-- **„Address already in use"** → Ports 443, 3000, 5173, 7880, 7881, 7882 müssen frei sein. `lsof -nP -iTCP:443 -sTCP:LISTEN` zeigt den Blocker.
+- **Listener hears nothing** → tap ▶︎ again. On iOS, audio only starts after a touch (browser policy).
+- **"Microphone access denied"** for the translator → macOS System Settings ▸ Privacy ▸ Microphone → allow browser. Browser additionally needs HTTPS — `localhost` and Caddy's internal CA are both OK.
+- **Listener device cannot connect** → Accept Caddy's cert (Browser warning "Advanced ▸ proceed anyway"). Alternatively, distribute the Caddy root once: `cat ~/Library/Application\ Support/Caddy/pki/authorities/local/root.crt`.
+- **Audio drops out** → Event Wi-Fi has too little bandwidth. For 500 listeners × 50 kbit/s = 25 Mbit/s. Use Ethernet between MacBook and Wi-Fi access points, do not connect the Mac itself via Wi-Fi.
+- **"Address already in use"** → Ports 443, 3000, 5173, 7880, 7881, 7882 must be free. `lsof -nP -iTCP:443 -sTCP:LISTEN` shows the blocker.
 
-## Entwicklungs-Modus
+## Development Mode
 
-Vite Hot-Reload, tsx-Watch fürs Backend, Caddy mit `tls internal` — `./scripts/start.sh` macht alles auf einmal. Code-Änderungen erscheinen sofort im Browser.
+Vite Hot-Reload, tsx-Watch for the backend, Caddy with `tls internal` — `./scripts/start.sh` does everything at once. Code changes appear immediately in the browser.
 
-Für Produktion (statisches Frontend statt Vite-Dev):
+For production (static frontend instead of Vite-Dev):
 
 ```bash
 cd frontend && npm run build
 ```
 
-Caddyfile so umschreiben, dass es `frontend/dist/` als `root` serviert (statt Proxy auf `:5173`), und das `frontend`-Process aus dem `Procfile` entfernen.
+Rewrite Caddyfile so that it serves `frontend/dist/` as `root` (instead of proxy to `:5173`), and remove the `frontend` process from the `Procfile`.
