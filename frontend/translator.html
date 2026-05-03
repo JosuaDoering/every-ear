@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#06101c" />
+    <title>LocalLingua · Translator</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Translator Console</h1>
+
+      <section id="setup-section">
+        <div id="who-setup" class="who"></div>
+        <label>
+          Microphone
+          <select id="mic"></select>
+        </label>
+        <div class="row">
+          <button id="connect" class="primary"><span>Broadcast</span></button>
+          <button id="mute"><span>Mute</span></button>
+        </div>
+      </section>
+
+      <section id="live-section" hidden>
+        <div class="level"><div id="level" class="level-bar"></div></div>
+        <div class="row">
+          <button id="sign-out" class="danger"><span>Sign out</span></button>
+        </div>
+      </section>
+
+      <div id="status" class="status"></div>
+    </main>
+    <script type="module" src="/src/translator.ts"></script>
+  </body>
+</html>

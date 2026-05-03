@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#06101c" />
+    <title>LocalLingua · Administration</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="admin">
+      <h1>Administration</h1>
+
+      <div class="admin-block">
+        <h2>Translator codes</h2>
+        <p class="hint">
+          One code per translator. Each code unlocks one channel under a
+          chosen display name.
+        </p>
+        <div id="code-list" class="code-list"></div>
+        <form id="code-form" class="row-stack">
+          <label>
+            Language
+            <select id="code-language"></select>
+          </label>
+          <label>
+            Translator name
+            <input id="code-name" type="text" placeholder="e.g. Anna" />
+          </label>
+          <button type="submit" class="primary"><span>Generate code</span></button>
+        </form>
+      </div>
+
+      <div class="admin-block">
+        <h2>Background image</h2>
+        <p class="hint">JPEG, PNG, WebP or AVIF. Affects all listener and translator pages.</p>
+        <div class="bg-preview" id="bg-preview"></div>
+        <form id="bg-form" class="row-stack">
+          <label class="file-label">
+            <input id="bg-file" type="file" accept="image/*" />
+            <span class="file-fake">Choose image…</span>
+            <span id="bg-filename" class="file-name">No file chosen</span>
+          </label>
+          <div class="row">
+            <button type="submit" class="primary"><span>Upload</span></button>
+            <button type="button" id="bg-reset"><span>Reset to default</span></button>
+          </div>
+        </form>
+      </div>
+
+      <div class="admin-footer">
+        <button id="admin-logout" class="danger"><span>Sign out</span></button>
+      </div>
+
+      <div id="status" class="status"></div>
+    </main>
+    <script type="module" src="/src/admin.ts"></script>
+  </body>
+</html>

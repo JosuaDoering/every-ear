@@ -1,0 +1,26 @@
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+  # node_ip is overridden via --node-ip CLI flag in Procfile so we can read $LIVEKIT_NODE_IP from .env
+
+logging:
+  level: info
+  json: false
+
+# API keys come from LIVEKIT_KEYS env var ("<key>: <secret>") — see Procfile.
+
+room:
+  auto_create: true
+  empty_timeout: 600
+  max_participants: 600
+
+audio:
+  active_level: 30
+  min_percentile: 40
+  update_interval: 400
+  smooth_intervals: 2

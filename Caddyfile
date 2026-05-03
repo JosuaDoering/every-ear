@@ -1,0 +1,24 @@
+# Local HTTPS for the event LAN. Caddy issues an internal cert; listeners must
+# accept it once on each device (or trust the Caddy root CA).
+#
+# {$PUBLIC_HOST} expands to the value from .env at start-time (overmind loads .env).
+
+{$PUBLIC_HOST}:443, localhost:443 {
+	tls internal
+
+	# LiveKit signaling (WebSocket). Media still flows over UDP/TCP 7881-7882
+	# directly from the browser, not through this proxy.
+	handle_path /livekit/* {
+		reverse_proxy localhost:7880
+	}
+
+	# Token + config endpoints.
+	handle /api/* {
+		reverse_proxy localhost:{$BACKEND_PORT:3000}
+	}
+
+	# Frontend (Vite dev server during development; static dist/ in production).
+	handle {
+		reverse_proxy localhost:5173
+	}
+}

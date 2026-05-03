@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#06101c" />
+    <title>LocalLingua · Translator Sign-In</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Translator Console</h1>
+      <p class="hint">Enter the 6-digit code your admin gave you.</p>
+      <div id="otp" class="otp">
+        <input type="text" inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 1" />
+        <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 2" />
+        <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 3" />
+        <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 4" />
+        <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 5" />
+        <input type="text" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Digit 6" />
+      </div>
+      <button id="verify-code" class="primary" disabled><span>Connect</span></button>
+      <div id="status" class="status"></div>
+    </main>
+    <script type="module" src="/src/translator-login.ts"></script>
+  </body>
+</html>
