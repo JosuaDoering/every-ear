@@ -20,10 +20,9 @@ if [ ! -f .env ]; then
   echo "→ Wrote .env (LAN IP detected: ${LAN_IP}). Edit passwords before going live."
 fi
 
-echo "→ Installing backend dependencies…"
+echo "→ Installing root, backend and frontend dependencies…"
+npm install
 (cd backend && npm install)
-
-echo "→ Installing frontend dependencies…"
 (cd frontend && npm install)
 
 echo "→ Allowing Caddy to bind 443 without sudo (one-time)…"
