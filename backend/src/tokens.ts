@@ -4,13 +4,16 @@ import { randomUUID } from "node:crypto";
 
 const SIX_HOURS = "6h";
 
-export async function listenerToken(language: string): Promise<string> {
+export async function listenerToken(
+  eventId: string,
+  language: string,
+): Promise<string> {
   const at = new AccessToken(config.apiKey, config.apiSecret, {
     identity: `listener-${randomUUID()}`,
     ttl: SIX_HOURS,
   });
   at.addGrant({
-    room: config.roomFor(language),
+    room: config.roomFor(eventId, language),
     roomJoin: true,
     canPublish: false,
     canSubscribe: true,
@@ -21,6 +24,7 @@ export async function listenerToken(language: string): Promise<string> {
 }
 
 export async function translatorToken(
+  eventId: string,
   language: string,
   displayName: string,
 ): Promise<string> {
@@ -30,7 +34,7 @@ export async function translatorToken(
     ttl: SIX_HOURS,
   });
   at.addGrant({
-    room: config.roomFor(language),
+    room: config.roomFor(eventId, language),
     roomJoin: true,
     canPublish: true,
     canSubscribe: true,

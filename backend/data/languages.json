@@ -1,0 +1,22 @@
+[
+  {
+    "code": "de",
+    "name": "Deutsch",
+    "flag": "🇩🇪"
+  },
+  {
+    "code": "en",
+    "name": "English",
+    "flag": "🇬🇧"
+  },
+  {
+    "code": "es",
+    "name": "Español",
+    "flag": "🇪🇸"
+  },
+  {
+    "code": "ru",
+    "name": "Русский",
+    "flag": "🇷🇺"
+  }
+]

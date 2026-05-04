@@ -2,9 +2,15 @@ import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import { config } from "./config.js";
 import { listenerToken, translatorToken } from "./tokens.js";
-import { getCode, markUsed } from "./codes.js";
+import { getCode, listCodes, markUsed } from "./codes.js";
+import { getEvent, listEvents } from "./events.js";
+import {
+  getLanguage,
+  listLanguages,
+  validLanguage,
+} from "./languages.js";
 import { adminPlugin } from "./admin.js";
-import { registerBackgroundRoute } from "./background.js";
+import { registerBackgroundRoutes } from "./background.js";
 
 async function start() {
   const app = Fastify({ logger: true });
@@ -13,17 +19,41 @@ async function start() {
     limits: { fileSize: 10 * 1024 * 1024 },
   });
 
-  app.get("/api/languages", async () => ({ languages: config.languages }));
+  app.get("/api/languages", async () => ({
+    languages: await listLanguages(),
+  }));
 
-  app.post<{ Body: { language?: string } }>(
+  app.get("/api/events", async () => {
+    const [events, langs] = await Promise.all([listEvents(), listLanguages()]);
+    const byCode = new Map(langs.map((l) => [l.code, l]));
+    return {
+      events: events.map((e) => ({
+        id: e.id,
+        name: e.name,
+        languages: e.languages
+          .map((c) => byCode.get(c))
+          .filter((l): l is (typeof langs)[number] => Boolean(l)),
+        hasBackground: Boolean(e.backgroundExt),
+      })),
+    };
+  });
+
+  app.post<{ Body: { eventId?: string; language?: string } }>(
     "/api/token/listener",
     async (req, reply) => {
+      const eventId = req.body?.eventId?.trim();
       const language = req.body?.language?.toLowerCase();
-      if (!language || !config.validLanguage(language)) {
+      if (!eventId) return reply.code(400).send({ error: "eventId required" });
+      if (!language || !(await validLanguage(language))) {
         return reply.code(400).send({ error: "unknown language" });
       }
-      const token = await listenerToken(language);
-      return { token, room: config.roomFor(language) };
+      const event = await getEvent(eventId);
+      if (!event) return reply.code(404).send({ error: "event not found" });
+      if (!event.languages.includes(language)) {
+        return reply.code(400).send({ error: "language not in event" });
+      }
+      const token = await listenerToken(eventId, language);
+      return { token, room: config.roomFor(eventId, language) };
     },
   );
 
@@ -36,22 +66,34 @@ async function start() {
       }
       const entry = await getCode(code);
       if (!entry) return reply.code(404).send({ error: "code not found" });
-      const token = await translatorToken(entry.language, entry.name);
+      const event = await getEvent(entry.eventId);
+      if (!event) return reply.code(410).send({ error: "event no longer exists" });
+      const lang = await getLanguage(entry.language);
+      if (!lang) {
+        return reply.code(410).send({ error: "language no longer configured" });
+      }
+      const token = await translatorToken(entry.eventId, entry.language, entry.name);
       await markUsed(code);
-      const lang = config.languages.find((l) => l.code === entry.language);
       return {
         token,
-        room: config.roomFor(entry.language),
+        room: config.roomFor(entry.eventId, entry.language),
         language: entry.language,
-        languageName: lang?.name ?? entry.language.toUpperCase(),
-        flag: lang?.flag ?? "🏳️",
+        languageName: lang.name,
+        flag: lang.flag,
         name: entry.name,
+        eventId: event.id,
+        eventName: event.name,
+        eventHasBackground: Boolean(event.backgroundExt),
       };
     },
   );
 
-  registerBackgroundRoute(app);
+  registerBackgroundRoutes(app);
   await app.register(adminPlugin, { prefix: "/api/admin" });
+
+  // Trigger the codes-file migration on boot so listeners can see the
+  // auto-created default event without first hitting an admin route.
+  await listCodes();
 
   await app.listen({ port: config.port, host: "127.0.0.1" });
 }

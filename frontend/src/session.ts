@@ -7,6 +7,9 @@ export type TranslatorGrant = {
   languageName: string;
   flag: string;
   name: string;
+  eventId: string;
+  eventName: string;
+  eventHasBackground: boolean;
 };
 
 type StoredGrant = TranslatorGrant & { savedAt: number };

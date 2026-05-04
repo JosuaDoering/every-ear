@@ -30,6 +30,10 @@
 
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
+  /* The hero photo URL — defaults to the global background, but the
+     listener and translator pages swap this in for the event's own image. */
+  --bg-image: url("/api/background");
+
   font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
     system-ui, sans-serif;
   color-scheme: dark;
@@ -68,7 +72,7 @@ body {
       rgba(6, 16, 28, 0.55) 100%
     ),
     /* The hero image — served by the backend so admins can swap it. */
-    url("/api/background");
+    var(--bg-image);
   background-size: cover, cover, cover;
   background-position: center, center, center;
   background-attachment: fixed, fixed, fixed;
@@ -553,12 +557,149 @@ button.ghost::before {
   display: none;
 }
 
+/* Listener / translator event-name banner. */
+.event-banner {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-align: center;
+  padding: 0.7rem 0.95rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--fg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.event-banner[hidden] {
+  display: none;
+}
+
+.mic-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.mic-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+button.mic-refresh {
+  flex: 0 0 auto;
+  width: 2.7rem;
+  padding: 0;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+/* Translator broadcasting tint — fades in while the mic is live and
+   unmuted, fades back out when muted, disconnected or signed out. */
+#broadcast-tint {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  background:
+    radial-gradient(
+      ellipse 90% 80% at 50% 35%,
+      rgba(255, 80, 80, 0.32) 0%,
+      rgba(170, 25, 25, 0.45) 55%,
+      rgba(80, 10, 10, 0.6) 100%
+    );
+  mix-blend-mode: normal;
+}
+
+body.broadcasting #broadcast-tint {
+  opacity: 1;
+}
+
+/* While live, the event banner picks up a gentle red glow as a
+   secondary signal that the broadcast is active. */
+body.broadcasting .event-banner {
+  background: rgba(180, 40, 40, 0.22);
+  border-color: rgba(255, 90, 90, 0.45);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 24px rgba(220, 60, 60, 0.35);
+}
+
 /* ---------------------------------------------------------------------
    Admin page
    --------------------------------------------------------------------- */
 
+body.admin-body {
+  align-items: flex-start;
+  padding: 2rem 2rem 4rem;
+}
+
 main.admin {
-  max-width: 36rem;
+  max-width: 64rem;
+  padding: 2rem 2.25rem 2.5rem;
+}
+
+@media (max-width: 720px) {
+  body.admin-body {
+    padding: 1rem 1rem 3rem;
+  }
+  main.admin {
+    padding: 1.5rem 1.4rem 1.75rem;
+    border-radius: 22px;
+  }
+}
+
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.admin-header h1 {
+  margin: 0;
+}
+
+.admin-header-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.block-header > div:first-child {
+  min-width: 0;
+}
+
+.block-header h2 {
+  margin: 0 0 0.25rem 0;
+}
+
+.block-header .hint {
+  margin: 0;
+}
+
+.block-header-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.self-start {
+  align-self: flex-start;
 }
 
 main.admin h2 {
@@ -727,6 +868,537 @@ button.small {
 
 .status.ok {
   color: #88e0a8;
+}
+
+/* ---------------------------------------------------------------------
+   Event admin UI
+   --------------------------------------------------------------------- */
+
+.event-table {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.event-table-head {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto auto auto;
+  gap: 1rem;
+  padding: 0.7rem 1rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.event-table-head .num {
+  text-align: right;
+}
+
+button.event-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto auto auto;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--fg);
+  white-space: normal;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: background 0.15s ease;
+}
+
+button.event-table-row::before {
+  display: none;
+}
+
+button.event-table-row:last-child {
+  border-bottom: none;
+}
+
+button.event-table-row:hover:not([disabled]) {
+  background: rgba(255, 255, 255, 0.05);
+  transform: none;
+  box-shadow: none;
+}
+
+button.event-table-row.active {
+  background: rgba(90, 122, 214, 0.18);
+}
+
+.cell-name {
+  font-weight: 700;
+  align-self: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cell-langs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-self: center;
+}
+
+.cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  align-self: center;
+}
+
+.cell-bg {
+  align-self: center;
+}
+
+.cell-chevron {
+  color: var(--muted);
+  align-self: center;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.event-lang-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.bg-pill {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--muted-strong);
+}
+
+.bg-pill.on {
+  background: rgba(90, 122, 214, 0.22);
+  border-color: rgba(90, 122, 214, 0.55);
+  color: var(--fg);
+}
+
+.event-table-empty {
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--muted);
+  padding: 1.6rem 1rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .event-table-head {
+    display: none;
+  }
+  button.event-table-row {
+    grid-template-columns: 1fr auto;
+    gap: 0.4rem 1rem;
+  }
+  .cell-name {
+    grid-column: 1 / 2;
+  }
+  .cell-chevron {
+    grid-column: 2 / 3;
+    grid-row: 1 / span 3;
+  }
+  .cell-langs {
+    grid-column: 1 / 2;
+  }
+  .cell-num,
+  .cell-bg {
+    grid-column: 1 / 2;
+    text-align: left;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .cell-num::before {
+    content: "Codes: ";
+    color: var(--muted);
+  }
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.detail-grid .subblock-wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 720px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.code-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: center;
+}
+
+@media (max-width: 600px) {
+  .code-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.default-bg-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.2rem;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .default-bg-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Modal — used by "+ New event". */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(6, 16, 28, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  animation: modalFade 0.18s ease;
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+@keyframes modalFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal {
+  width: 100%;
+  max-width: 30rem;
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.14),
+    rgba(255, 255, 255, 0.05) 70%
+  );
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  padding: 1.6rem 1.75rem 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  box-shadow:
+    0 24px 50px -12px rgba(0, 0, 0, 0.55),
+    0 60px 120px -30px rgba(0, 0, 0, 0.7);
+  animation: modalPop 0.22s var(--ease);
+}
+
+.modal-wide {
+  max-width: 48rem;
+}
+
+.modal-header-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.modal-header-text .hint {
+  margin: 0.3rem 0 0 0;
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.modal-title-row h2 {
+  margin: 0;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 0.6rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 0.4rem;
+  align-items: center;
+}
+
+.modal-footer .grow {
+  flex: 1;
+}
+
+/* Languages modal rows. */
+.lang-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.lang-list .empty {
+  text-align: center;
+  font-size: 0.88rem;
+  color: var(--muted);
+  padding: 1.3rem 0;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+}
+
+.lang-row {
+  display: grid;
+  grid-template-columns: 3rem 4rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+}
+
+.lang-row-code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted-strong);
+  text-transform: uppercase;
+}
+
+.lang-row input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.95rem;
+  border-radius: 10px;
+}
+
+.lang-row input.lang-row-flag {
+  text-align: center;
+  font-size: 1.1rem;
+  padding: 0.5rem 0.4rem;
+}
+
+.lang-add-row {
+  display: grid;
+  grid-template-columns: 6rem 5rem minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.65rem 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.lang-add-row input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.95rem;
+  border-radius: 10px;
+}
+
+@media (max-width: 600px) {
+  .lang-row {
+    grid-template-columns: 3rem 4rem 1fr;
+    grid-template-areas:
+      "code flag name"
+      ".    .    actions";
+  }
+  .lang-row-code { grid-area: code; }
+  .lang-row-flag { grid-area: flag; }
+  .lang-row-name { grid-area: name; }
+  .lang-row-save,
+  .lang-row-remove {
+    grid-area: actions;
+    justify-self: end;
+  }
+  .lang-add-row {
+    grid-template-columns: 6rem 5rem 1fr;
+    grid-template-areas:
+      "code flag name"
+      ".    .    submit";
+  }
+  .lang-add-row input:nth-child(1) { grid-area: code; }
+  .lang-add-row input:nth-child(2) { grid-area: flag; }
+  .lang-add-row input:nth-child(3) { grid-area: name; }
+  .lang-add-row button { grid-area: submit; justify-self: end; }
+}
+
+@keyframes modalPop {
+  from { transform: translateY(8px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: -0.005em;
+}
+
+.modal-close {
+  font-size: 1.4rem;
+  font-weight: 400;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--fg);
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.modal-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.modal-actions > * {
+  flex: 0 0 auto;
+}
+
+.lang-pick {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 0.7rem 0.9rem 0.85rem;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.lang-pick legend {
+  padding: 0 0.4rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+
+.lang-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.lang-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted-strong);
+}
+
+.lang-chip input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.3);
+  display: inline-grid;
+  place-content: center;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.lang-chip input:checked {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.lang-chip input:checked::after {
+  content: "✓";
+  font-size: 11px;
+  color: #fff;
+  line-height: 1;
+}
+
+.lang-chip:has(input:checked) {
+  background: rgba(90, 122, 214, 0.2);
+  border-color: rgba(90, 122, 214, 0.5);
+  color: var(--fg);
+}
+
+.admin-subblock {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 1rem 1.1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.admin-subblock h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--fg);
+  letter-spacing: 0;
 }
 
 @media (max-width: 480px) {

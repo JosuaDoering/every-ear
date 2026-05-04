@@ -6,8 +6,9 @@ import {
   type RemoteTrackPublication,
   type RemoteParticipant,
 } from "livekit-client";
-import { fetchLanguages, livekitUrl, type Language } from "./livekit.js";
+import { livekitUrl, type Language } from "./livekit.js";
 
+const $eventSelect = document.getElementById("event") as HTMLSelectElement;
 const $select = document.getElementById("language") as HTMLSelectElement;
 const $play = document.getElementById("play") as HTMLButtonElement;
 const $playLabel = $play.querySelector("span") as HTMLSpanElement;
@@ -16,9 +17,16 @@ const $audio = document.getElementById("audio") as HTMLAudioElement;
 const $level = document.getElementById("level") as HTMLDivElement;
 const $speaker = document.getElementById("speaker") as HTMLDivElement;
 
+type EventEntry = {
+  id: string;
+  name: string;
+  languages: Language[];
+  hasBackground: boolean;
+};
+
 let room: Room | null = null;
 let levelTimer: number | null = null;
-let languages: Language[] = [];
+let events: EventEntry[] = [];
 
 function setStatus(text: string, isError = false) {
   if (!$status) return;
@@ -30,13 +38,18 @@ function setPlaying(playing: boolean) {
   $playLabel.textContent = playing ? "■ Stop" : "▶ Play";
   $play.classList.toggle("playing", playing);
   $select.disabled = playing;
+  $eventSelect.disabled = playing;
 }
 
-async function getToken(language: string): Promise<string> {
+function currentEvent(): EventEntry | undefined {
+  return events.find((e) => e.id === $eventSelect.value);
+}
+
+async function getToken(eventId: string, language: string): Promise<string> {
   const res = await fetch("/api/token/listener", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ language }),
+    body: JSON.stringify({ eventId, language }),
   });
   if (!res.ok) throw new Error(`Token request failed (${res.status})`);
   const { token } = (await res.json()) as { token: string };
@@ -84,7 +97,6 @@ function stopLevelMeter() {
   }
 }
 
-/** Pick the first remote participant who has an unmuted, subscribed audio track. */
 function activeBroadcaster(r: Room): RemoteParticipant | null {
   for (const p of r.remoteParticipants.values()) {
     for (const pub of p.audioTrackPublications.values()) {
@@ -111,15 +123,54 @@ function updateSpeakerLabel() {
 }
 
 function languageFlagFor(code: string): string {
-  return languages.find((l) => l.code === code)?.flag ?? "";
+  const ev = currentEvent();
+  return ev?.languages.find((l) => l.code === code)?.flag ?? "";
+}
+
+function applyEventBackground(eventId: string | null) {
+  const url = eventId
+    ? `url("/api/events/${eventId}/background")`
+    : `url("/api/background")`;
+  document.documentElement.style.setProperty("--bg-image", url);
+}
+
+function renderLanguageOptions(ev: EventEntry | undefined) {
+  $select.innerHTML = "";
+  if (!ev || ev.languages.length === 0) {
+    const opt = document.createElement("option");
+    opt.disabled = true;
+    opt.selected = true;
+    opt.textContent = "No languages available";
+    $select.appendChild(opt);
+    $play.disabled = true;
+    return;
+  }
+  for (const l of ev.languages) {
+    const opt = document.createElement("option");
+    opt.value = l.code;
+    opt.textContent = `${l.flag}  ${l.name}`;
+    $select.appendChild(opt);
+  }
+  $play.disabled = false;
+}
+
+function applyCurrentEvent() {
+  const ev = currentEvent();
+  applyEventBackground(ev ? ev.id : null);
+  renderLanguageOptions(ev);
 }
 
 async function start() {
+  const ev = currentEvent();
+  if (!ev) {
+    setStatus("Pick an event first.", true);
+    return;
+  }
   const language = $select.value;
   setStatus("Connecting…");
   $play.disabled = true;
   try {
-    const token = await getToken(language);
+    const token = await getToken(ev.id, language);
     room = new Room({
       adaptiveStream: false,
       dynacast: false,
@@ -176,22 +227,30 @@ $play.addEventListener("click", () => {
   else void start();
 });
 
+$eventSelect.addEventListener("change", () => {
+  applyCurrentEvent();
+});
+
 (async () => {
   try {
-    languages = await fetchLanguages();
-    if (languages.length === 0) {
-      setStatus("No languages configured.", true);
+    const res = await fetch("/api/events");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { events: EventEntry[] };
+    events = data.events;
+    if (events.length === 0) {
+      setStatus("No events configured yet.", true);
+      $play.disabled = true;
       return;
     }
-    for (const l of languages) {
+    for (const e of events) {
       const opt = document.createElement("option");
-      opt.value = l.code;
-      opt.textContent = `${l.flag}  ${l.name}`;
-      $select.appendChild(opt);
+      opt.value = e.id;
+      opt.textContent = e.name;
+      $eventSelect.appendChild(opt);
     }
-    $play.disabled = false;
+    applyCurrentEvent();
   } catch (err) {
-    setStatus("Could not load language list.", true);
+    setStatus("Could not load events.", true);
     console.error(err);
   }
 })();

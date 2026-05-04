@@ -8,15 +8,22 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
+    <div id="broadcast-tint" aria-hidden="true"></div>
     <main>
       <h1>Translator Console</h1>
+
+      <div id="event-name" class="event-banner" hidden></div>
 
       <section id="setup-section">
         <div id="who-setup" class="who"></div>
         <label>
           Microphone
-          <select id="mic"></select>
+          <div class="mic-row">
+            <select id="mic"></select>
+            <button type="button" id="mic-refresh" class="ghost mic-refresh" aria-label="Refresh microphone list" title="Refresh microphone list">↻</button>
+          </div>
         </label>
+        <div class="level"><div id="level" class="level-bar"></div></div>
         <div class="row">
           <button id="connect" class="primary"><span>Broadcast</span></button>
           <button id="mute"><span>Mute</span></button>
@@ -24,10 +31,7 @@
       </section>
 
       <section id="live-section" hidden>
-        <div class="level"><div id="level" class="level-bar"></div></div>
-        <div class="row">
           <button id="sign-out" class="danger"><span>Sign out</span></button>
-        </div>
       </section>
 
       <div id="status" class="status"></div>

@@ -2,9 +2,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { config } from "./config.js";
+import { ensureDefaultEvent } from "./events.js";
 
 export type Code = {
   code: string;
+  eventId: string;
   language: string;
   name: string;
   createdAt: string;
@@ -20,8 +22,21 @@ async function load(): Promise<Map<string, Code>> {
   await fs.mkdir(config.dataDir, { recursive: true });
   try {
     const raw = await fs.readFile(codesFile(), "utf8");
-    const arr = JSON.parse(raw) as Code[];
-    cache = new Map(arr.map((c) => [c.code, c]));
+    const arr = JSON.parse(raw) as Array<Partial<Code> & { code: string; language: string; name: string; createdAt: string }>;
+    let needsMigration = false;
+    let defaultEventId: string | null = null;
+    const entries: Code[] = [];
+    for (const c of arr) {
+      if (!c.eventId) {
+        if (!defaultEventId) defaultEventId = (await ensureDefaultEvent()).id;
+        entries.push({ ...c, eventId: defaultEventId } as Code);
+        needsMigration = true;
+      } else {
+        entries.push(c as Code);
+      }
+    }
+    cache = new Map(entries.map((c) => [c.code, c]));
+    if (needsMigration) await persist(cache);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       cache = new Map();
@@ -37,11 +52,11 @@ async function persist(map: Map<string, Code>): Promise<void> {
   await fs.writeFile(codesFile(), JSON.stringify(arr, null, 2));
 }
 
-export async function listCodes(): Promise<Code[]> {
+export async function listCodes(eventId?: string): Promise<Code[]> {
   const map = await load();
-  return Array.from(map.values()).sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt),
-  );
+  let arr = Array.from(map.values());
+  if (eventId) arr = arr.filter((c) => c.eventId === eventId);
+  return arr.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function getCode(code: string): Promise<Code | null> {
@@ -49,7 +64,11 @@ export async function getCode(code: string): Promise<Code | null> {
   return map.get(code) ?? null;
 }
 
-export async function createCode(language: string, name: string): Promise<Code> {
+export async function createCode(
+  eventId: string,
+  language: string,
+  name: string,
+): Promise<Code> {
   const map = await load();
   let code: string;
   do {
@@ -57,6 +76,7 @@ export async function createCode(language: string, name: string): Promise<Code> 
   } while (map.has(code));
   const entry: Code = {
     code,
+    eventId,
     language,
     name: name.slice(0, 60),
     createdAt: new Date().toISOString(),
@@ -71,6 +91,19 @@ export async function revokeCode(code: string): Promise<boolean> {
   const ok = map.delete(code);
   if (ok) await persist(map);
   return ok;
+}
+
+export async function revokeCodesForEvent(eventId: string): Promise<number> {
+  const map = await load();
+  let removed = 0;
+  for (const [k, v] of map) {
+    if (v.eventId === eventId) {
+      map.delete(k);
+      removed++;
+    }
+  }
+  if (removed > 0) await persist(map);
+  return removed;
 }
 
 export async function markUsed(code: string): Promise<void> {
