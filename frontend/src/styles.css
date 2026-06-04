@@ -1509,3 +1509,102 @@ button.is-loading.danger.outline::after {
   padding: 0;
   text-align: left;
 }
+
+/* ============ AI translation ============ */
+
+/* A language chip blocked by the mutual exclusion between manual / AI pickers. */
+.lang-chip.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.ai-subhead {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.ai-source-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
+
+/* Second (AI operator) code form: name + button only. */
+#ai-code-form {
+  grid-template-columns: 1fr auto;
+  margin-top: var(--space-2);
+}
+
+.code-meta .code-lang.ai-pill {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+/* Listener subtitle overlay — readable band under the now-playing pill. */
+.captions {
+  min-height: 2.6em;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-lg);
+  line-height: 1.35;
+  color: var(--fg);
+  text-align: center;
+}
+.captions:empty {
+  display: none;
+}
+.captions .caption-prev {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  display: block;
+}
+
+/* "Read aloud" toggle on AI channels. */
+.read-aloud-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* AI operator: per-channel status list. */
+.ai-channels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ai-channel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.ai-channel-lang {
+  font-weight: 600;
+}
+.ai-channel-state {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.ai-channel-state[data-state="live"] {
+  color: var(--brand);
+}
+.ai-channel-state[data-state="error"] {
+  color: var(--danger, #c0392b);
+}

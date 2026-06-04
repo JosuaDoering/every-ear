@@ -4,11 +4,15 @@ import { randomInt } from "node:crypto";
 import { config } from "./config.js";
 import { ensureDefaultEvent } from "./events.js";
 
+export type CodeRole = "translator" | "ai-operator";
+
 export type Code = {
   code: string;
   eventId: string;
+  /** Empty for ai-operator codes (they drive every AI language of the event). */
   language: string;
   name: string;
+  role?: CodeRole;
   createdAt: string;
   lastUsedAt?: string;
 };
@@ -68,6 +72,7 @@ export async function createCode(
   eventId: string,
   language: string,
   name: string,
+  role: CodeRole = "translator",
 ): Promise<Code> {
   const map = await load();
   let code: string;
@@ -77,8 +82,9 @@ export async function createCode(
   const entry: Code = {
     code,
     eventId,
-    language,
+    language: role === "ai-operator" ? "" : language,
     name: name.slice(0, 60),
+    role,
     createdAt: new Date().toISOString(),
   };
   map.set(code, entry);

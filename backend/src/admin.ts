@@ -19,6 +19,7 @@ import {
   ensureDefaultEvent,
   getEvent,
   listEvents,
+  stripLanguageFromEvents,
   updateEvent,
 } from "./events.js";
 import {
@@ -29,6 +30,7 @@ import {
   updateLanguage,
   validLanguage,
 } from "./languages.js";
+import { loadAiConfig, updateAiConfig, maskKey } from "./ai/config.js";
 
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -51,6 +53,73 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
 
   // Used by the admin login form to verify the password.
   app.get("/login", async () => ({ ok: true }));
+
+  // ---- AI settings ---------------------------------------------------------
+
+  app.get("/ai-config", async () => {
+    const cfg = await loadAiConfig();
+    return {
+      openRouterApiKey: maskKey(cfg.openRouterApiKey),
+      hasKey: Boolean(cfg.openRouterApiKey),
+      model: cfg.model,
+      temperature: cfg.temperature,
+      sttEngine: cfg.sttEngine,
+      ttsProvider: cfg.ttsProvider,
+    };
+  });
+
+  app.put<{
+    Body: {
+      openRouterApiKey?: string;
+      model?: string;
+      temperature?: number;
+      sttEngine?: string;
+      ttsProvider?: string;
+    };
+  }>("/ai-config", async (req) => {
+    const patch: Parameters<typeof updateAiConfig>[0] = {};
+    const key = req.body?.openRouterApiKey;
+    // Only overwrite the key when a real (non-masked) value is sent.
+    if (typeof key === "string" && key && !key.startsWith("…")) {
+      patch.openRouterApiKey = key.trim();
+    }
+    if (typeof req.body?.model === "string") patch.model = req.body.model.trim();
+    if (typeof req.body?.temperature === "number") patch.temperature = req.body.temperature;
+    if (typeof req.body?.sttEngine === "string") patch.sttEngine = req.body.sttEngine;
+    if (typeof req.body?.ttsProvider === "string") patch.ttsProvider = req.body.ttsProvider;
+    const cfg = await updateAiConfig(patch);
+    return {
+      openRouterApiKey: maskKey(cfg.openRouterApiKey),
+      hasKey: Boolean(cfg.openRouterApiKey),
+      model: cfg.model,
+      temperature: cfg.temperature,
+      sttEngine: cfg.sttEngine,
+      ttsProvider: cfg.ttsProvider,
+    };
+  });
+
+  // Proxy OpenRouter's model catalogue so the admin UI can offer a dropdown
+  // without exposing the API key to the browser.
+  app.get("/ai/models", async (_req, reply) => {
+    const cfg = await loadAiConfig();
+    const headers: Record<string, string> = {};
+    if (cfg.openRouterApiKey) headers.Authorization = `Bearer ${cfg.openRouterApiKey}`;
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/models", { headers });
+      if (!res.ok) {
+        return reply.code(502).send({ error: `OpenRouter error ${res.status}` });
+      }
+      const data = (await res.json()) as { data?: { id: string; name?: string }[] };
+      const models = (data.data ?? [])
+        .map((m) => ({ id: m.id, name: m.name ?? m.id }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return { models };
+    } catch (err) {
+      return reply.code(502).send({
+        error: err instanceof Error ? err.message : "could not reach OpenRouter",
+      });
+    }
+  });
 
   // ---- Languages -----------------------------------------------------------
 
@@ -87,16 +156,9 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     "/languages/:code",
     async (req, reply) => {
       const code = normalizeCode(req.params.code);
-      // Strip the language from each event, revoke codes for that language,
-      // then drop it from the master list.
-      const events = await listEvents();
-      for (const ev of events) {
-        if (ev.languages.includes(code)) {
-          await updateEvent(ev.id, {
-            languages: ev.languages.filter((c) => c !== code),
-          });
-        }
-      }
+      // Strip the language from each event (manual + AI), revoke codes for that
+      // language, then drop it from the master list.
+      await stripLanguageFromEvents(code);
       const allCodes = await listCodes();
       for (const c of allCodes) {
         if (c.language === code) await revokeCode(c.code);
@@ -115,25 +177,62 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     return { events: await listEvents() };
   });
 
-  app.post<{ Body: { name?: string; languages?: string[] } }>(
-    "/events",
-    async (req, reply) => {
-      const name = req.body?.name?.trim();
-      const languages = Array.isArray(req.body?.languages) ? req.body!.languages : [];
-      if (!name) return reply.code(400).send({ error: "name required" });
-      const event = await createEvent(name, languages);
-      return event;
-    },
-  );
+  app.post<{
+    Body: { name?: string; languages?: string[]; aiLanguages?: string[]; aiSourceLang?: string };
+  }>("/events", async (req, reply) => {
+    const name = req.body?.name?.trim();
+    const languages = Array.isArray(req.body?.languages) ? req.body!.languages : [];
+    const aiLanguages = Array.isArray(req.body?.aiLanguages) ? req.body!.aiLanguages : [];
+    const aiSourceLang = req.body?.aiSourceLang?.toLowerCase();
+    if (!name) return reply.code(400).send({ error: "name required" });
+    const overlap = languages.filter((l) => aiLanguages.includes(l));
+    if (overlap.length > 0) {
+      return reply.code(400).send({
+        error: `a language can't be both manual and AI: ${overlap.join(", ")}`,
+      });
+    }
+    const event = await createEvent(name, languages, aiLanguages, aiSourceLang);
+    return event;
+  });
 
   app.put<{
     Params: { id: string };
-    Body: { name?: string; languages?: string[]; active?: boolean };
+    Body: {
+      name?: string;
+      languages?: string[];
+      aiLanguages?: string[];
+      aiSourceLang?: string | null;
+      active?: boolean;
+    };
   }>("/events/:id", async (req, reply) => {
-    const patch: { name?: string; languages?: string[]; active?: boolean } = {};
+    const existing = await getEvent(req.params.id);
+    if (!existing) return reply.code(404).send({ error: "not found" });
+
+    const patch: {
+      name?: string;
+      languages?: string[];
+      aiLanguages?: string[];
+      aiSourceLang?: string | null;
+      active?: boolean;
+    } = {};
     if (typeof req.body?.name === "string") patch.name = req.body.name.trim();
     if (Array.isArray(req.body?.languages)) patch.languages = req.body.languages;
+    if (Array.isArray(req.body?.aiLanguages)) patch.aiLanguages = req.body.aiLanguages;
+    if (typeof req.body?.aiSourceLang === "string" || req.body?.aiSourceLang === null) {
+      patch.aiSourceLang = req.body.aiSourceLang;
+    }
     if (typeof req.body?.active === "boolean") patch.active = req.body.active;
+
+    // Reject any overlap between the effective manual and AI language sets.
+    const effLangs = patch.languages ?? existing.languages;
+    const effAi = patch.aiLanguages ?? existing.aiLanguages ?? [];
+    const overlap = effLangs.filter((l) => effAi.includes(l));
+    if (overlap.length > 0) {
+      return reply.code(400).send({
+        error: `a language can't be both manual and AI: ${overlap.join(", ")}`,
+      });
+    }
+
     const updated = await updateEvent(req.params.id, patch);
     if (!updated) return reply.code(404).send({ error: "not found" });
     return updated;
@@ -192,23 +291,34 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
   }));
 
   app.post<{
-    Body: { eventId?: string; language?: string; name?: string };
+    Body: { eventId?: string; language?: string; name?: string; role?: string };
   }>("/codes", async (req, reply) => {
     const eventId = req.body?.eventId?.trim();
-    const language = req.body?.language?.toLowerCase();
     const name = req.body?.name?.trim();
+    const role = req.body?.role === "ai-operator" ? "ai-operator" : "translator";
     if (!eventId) return reply.code(400).send({ error: "eventId required" });
+    if (!name) return reply.code(400).send({ error: "name required" });
+    const event = await getEvent(eventId);
+    if (!event) return reply.code(404).send({ error: "event not found" });
+
+    if (role === "ai-operator") {
+      if (!event.aiLanguages || event.aiLanguages.length === 0) {
+        return reply.code(400).send({
+          error: "add at least one AI language to this event first",
+        });
+      }
+      return await createCode(eventId, "", name, "ai-operator");
+    }
+
+    const language = req.body?.language?.toLowerCase();
     if (!language) return reply.code(400).send({ error: "language required" });
     if (!(await validLanguage(language))) {
       return reply.code(400).send({ error: "unknown language" });
     }
-    if (!name) return reply.code(400).send({ error: "name required" });
-    const event = await getEvent(eventId);
-    if (!event) return reply.code(404).send({ error: "event not found" });
     if (!event.languages.includes(language)) {
       return reply.code(400).send({ error: "language not in event" });
     }
-    return await createCode(eventId, language, name);
+    return await createCode(eventId, language, name, "translator");
   });
 
   app.delete<{ Params: { code: string } }>(

@@ -7,6 +7,9 @@ import {
   type RemoteParticipant,
 } from "livekit-client";
 import { livekitUrl, type Language } from "./livekit.js";
+import { decodeCaption } from "./ai/types.js";
+
+type ListenerLanguage = Language & { ai?: boolean };
 
 const $hero = document.getElementById("hero") as HTMLDivElement;
 const $eventLabel = document.getElementById("event-label") as HTMLLabelElement;
@@ -24,11 +27,14 @@ const $npFlag = document.getElementById("np-flag") as HTMLSpanElement;
 const $npName = document.getElementById("np-name") as HTMLSpanElement;
 const $npSuffix = document.getElementById("np-suffix") as HTMLSpanElement;
 const $intro = document.getElementById("intro") as HTMLParagraphElement;
+const $captions = document.getElementById("captions") as HTMLDivElement;
+const $readAloudRow = document.getElementById("read-aloud-row") as HTMLLabelElement;
+const $readAloud = document.getElementById("read-aloud") as HTMLInputElement;
 
 type EventEntry = {
   id: string;
   name: string;
-  languages: Language[];
+  languages: ListenerLanguage[];
   hasBackground: boolean;
 };
 
@@ -61,16 +67,98 @@ function setStatus(text: string, isError = false) {
 }
 
 function setPlaying(playing: boolean) {
+  const ai = selectedIsAi();
   $playLabel.textContent = playing ? "■  Stop" : "▶  Listen";
   $play.classList.toggle("danger", playing);
   $play.classList.toggle("primary", !playing);
   $select.disabled = playing;
   $eventSelect.disabled = playing;
-  $levelWrap.hidden = !playing;
+  // AI channels have no shared audio meter in this build — captions only.
+  $levelWrap.hidden = !playing || ai;
+  $readAloudRow.hidden = !(playing && ai);
+  if (!playing) clearCaptions();
 }
 
 function currentEvent(): EventEntry | undefined {
   return events.find((e) => e.id === $eventSelect.value);
+}
+
+function selectedIsAi(): boolean {
+  const ev = currentEvent();
+  return Boolean(ev?.languages.find((l) => l.code === $select.value)?.ai);
+}
+
+// ---- Captions --------------------------------------------------------------
+
+const captionById = new Map<number, string>();
+const captionOrder: number[] = [];
+
+function handleCaption(payload: Uint8Array) {
+  const msg = decodeCaption(payload);
+  if (!msg) return;
+  if (!captionById.has(msg.id)) captionOrder.push(msg.id);
+  captionById.set(msg.id, msg.text);
+  while (captionOrder.length > 3) {
+    const drop = captionOrder.shift()!;
+    captionById.delete(drop);
+  }
+  renderCaptions();
+  if (msg.final && selectedIsAi() && $readAloud.checked) {
+    speakCaption(msg.text, $select.value);
+  }
+}
+
+function renderCaptions() {
+  const ids = captionOrder;
+  const lastId = ids[ids.length - 1];
+  const prevId = ids[ids.length - 2];
+  const lastText = lastId != null ? captionById.get(lastId) ?? "" : "";
+  const prevText = prevId != null ? captionById.get(prevId) ?? "" : "";
+  $captions.innerHTML = "";
+  if (prevText) {
+    const prev = document.createElement("span");
+    prev.className = "caption-prev";
+    prev.textContent = prevText;
+    $captions.appendChild(prev);
+  }
+  if (lastText) $captions.appendChild(document.createTextNode(lastText));
+  $captions.hidden = !(prevText || lastText);
+}
+
+function clearCaptions() {
+  captionById.clear();
+  captionOrder.length = 0;
+  $captions.innerHTML = "";
+  $captions.hidden = true;
+  try {
+    window.speechSynthesis?.cancel();
+  } catch {
+    // no speech synthesis available
+  }
+}
+
+// iOS/Safari only allows speechSynthesis after a user gesture. Calling this
+// from the "Listen" tap unlocks it so later captions can be spoken.
+function primeSpeech() {
+  if (!("speechSynthesis" in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  } catch {
+    // ignore
+  }
+}
+
+function speakCaption(text: string, lang: string) {
+  if (!("speechSynthesis" in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang;
+    window.speechSynthesis.speak(u);
+  } catch {
+    // ignore — listener still sees the text
+  }
 }
 
 async function getToken(eventId: string, language: string): Promise<string> {
@@ -137,6 +225,13 @@ function activeBroadcaster(r: Room): RemoteParticipant | null {
 function updateSpeakerLabel() {
   if (!room) {
     $nowPlaying.hidden = true;
+    return;
+  }
+  if (selectedIsAi()) {
+    $npFlag.textContent = "🤖";
+    $npName.textContent = "AI translation";
+    $npSuffix.textContent = "live captions on your device";
+    $nowPlaying.hidden = false;
     return;
   }
   const p = activeBroadcaster(room);
@@ -212,6 +307,8 @@ async function start() {
   }
   const language = $select.value;
   savePrefs({ eventId: ev.id, language });
+  // Unlock device speech within the tap gesture (iOS) before any await.
+  if (selectedIsAi() && $readAloud.checked) primeSpeech();
   setStatus("Connecting…");
   $play.disabled = true;
   try {
@@ -227,6 +324,7 @@ async function start() {
     });
     room.on(RoomEvent.TrackMuted, () => updateSpeakerLabel());
     room.on(RoomEvent.TrackUnmuted, () => updateSpeakerLabel());
+    room.on(RoomEvent.DataReceived, (payload: Uint8Array) => handleCaption(payload));
     room.on(RoomEvent.TrackPublished, (_pub: RemoteTrackPublication) =>
       updateSpeakerLabel(),
     );
@@ -278,6 +376,16 @@ $eventSelect.addEventListener("change", () => {
 $select.addEventListener("change", () => {
   const ev = currentEvent();
   savePrefs({ eventId: ev?.id, language: $select.value });
+});
+
+$readAloud.addEventListener("change", () => {
+  if ($readAloud.checked) primeSpeech();
+  else
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // ignore
+    }
 });
 
 (async () => {

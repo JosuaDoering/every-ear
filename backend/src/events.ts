@@ -11,6 +11,10 @@ export type Event = {
   id: string;
   name: string;
   languages: string[];
+  /** Languages covered by AI translation (subtitles + TTS), disjoint from `languages`. */
+  aiLanguages?: string[];
+  /** Source language the AI operator speaks, transcribed before translation. */
+  aiSourceLang?: string;
   backgroundExt?: string;
   createdAt: string;
   active?: boolean;
@@ -61,6 +65,8 @@ export async function getEvent(id: string): Promise<Event | null> {
 export async function createEvent(
   name: string,
   languages: string[],
+  aiLanguages: string[] = [],
+  aiSourceLang?: string,
 ): Promise<Event> {
   const map = await load();
   let id: string;
@@ -68,12 +74,18 @@ export async function createEvent(
     id = makeId();
   } while (map.has(id));
   const known = await languageCodeSet();
+  const langs = languages.filter((l) => known.has(l));
+  const aiLangs = aiLanguages
+    .filter((l) => known.has(l))
+    .filter((l) => !langs.includes(l));
   const entry: Event = {
     id,
     name: name.slice(0, 80),
-    languages: languages.filter((l) => known.has(l)),
+    languages: langs,
     createdAt: new Date().toISOString(),
   };
+  if (aiLangs.length > 0) entry.aiLanguages = aiLangs;
+  if (aiSourceLang && known.has(aiSourceLang)) entry.aiSourceLang = aiSourceLang;
   map.set(id, entry);
   await persist(map);
   return entry;
@@ -81,15 +93,44 @@ export async function createEvent(
 
 export async function updateEvent(
   id: string,
-  patch: { name?: string; languages?: string[]; backgroundExt?: string | null; active?: boolean },
+  patch: {
+    name?: string;
+    languages?: string[];
+    aiLanguages?: string[];
+    aiSourceLang?: string | null;
+    backgroundExt?: string | null;
+    active?: boolean;
+  },
 ): Promise<Event | null> {
   const map = await load();
   const entry = map.get(id);
   if (!entry) return null;
   if (patch.name !== undefined) entry.name = patch.name.slice(0, 80);
-  if (patch.languages !== undefined) {
-    const known = await languageCodeSet();
+  const known =
+    patch.languages !== undefined || patch.aiLanguages !== undefined
+      ? await languageCodeSet()
+      : null;
+  if (patch.languages !== undefined && known) {
     entry.languages = patch.languages.filter((l) => known.has(l));
+  }
+  if (patch.aiLanguages !== undefined && known) {
+    const aiLangs = patch.aiLanguages
+      .filter((l) => known.has(l))
+      .filter((l) => !entry.languages.includes(l));
+    if (aiLangs.length > 0) entry.aiLanguages = aiLangs;
+    else delete entry.aiLanguages;
+  } else if (patch.languages !== undefined && entry.aiLanguages) {
+    // Languages changed but aiLanguages didn't — drop any newly-overlapping code.
+    const aiLangs = entry.aiLanguages.filter((l) => !entry.languages.includes(l));
+    if (aiLangs.length > 0) entry.aiLanguages = aiLangs;
+    else delete entry.aiLanguages;
+  }
+  if (patch.aiSourceLang !== undefined) {
+    if (patch.aiSourceLang === null || patch.aiSourceLang === "") {
+      delete entry.aiSourceLang;
+    } else {
+      entry.aiSourceLang = patch.aiSourceLang;
+    }
   }
   if (patch.backgroundExt !== undefined) {
     if (patch.backgroundExt === null) delete entry.backgroundExt;
@@ -98,6 +139,29 @@ export async function updateEvent(
   if (patch.active !== undefined) entry.active = patch.active;
   await persist(map);
   return entry;
+}
+
+/** Strip a language code from every event's `languages` and `aiLanguages`. */
+export async function stripLanguageFromEvents(code: string): Promise<void> {
+  const map = await load();
+  let changed = false;
+  for (const ev of map.values()) {
+    if (ev.languages.includes(code)) {
+      ev.languages = ev.languages.filter((c) => c !== code);
+      changed = true;
+    }
+    if (ev.aiLanguages?.includes(code)) {
+      const next = ev.aiLanguages.filter((c) => c !== code);
+      if (next.length > 0) ev.aiLanguages = next;
+      else delete ev.aiLanguages;
+      changed = true;
+    }
+    if (ev.aiSourceLang === code) {
+      delete ev.aiSourceLang;
+      changed = true;
+    }
+  }
+  if (changed) await persist(map);
 }
 
 export async function listActiveEvents(): Promise<Event[]> {

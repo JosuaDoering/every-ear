@@ -29,6 +29,8 @@ const $eventModalClose = document.getElementById("event-modal-close") as HTMLBut
 const $detailName = document.getElementById("detail-name") as HTMLHeadingElement;
 const $detailMeta = document.getElementById("detail-meta") as HTMLParagraphElement;
 const $detailLanguages = document.getElementById("detail-languages") as HTMLDivElement;
+const $detailAiLanguages = document.getElementById("detail-ai-languages") as HTMLDivElement;
+const $detailAiSource = document.getElementById("detail-ai-source") as HTMLSelectElement;
 const $detailSaveLangs = document.getElementById("detail-save-langs") as HTMLButtonElement;
 const $detailBgPreview = document.getElementById("detail-bg-preview") as HTMLDivElement;
 const $detailBgForm = document.getElementById("detail-bg-form") as HTMLFormElement;
@@ -45,6 +47,20 @@ const $codeName = document.getElementById("code-name") as HTMLInputElement;
 const $codeForm = document.getElementById("code-form") as HTMLFormElement;
 const $codeSubmit = document.getElementById("code-submit") as HTMLButtonElement;
 const $codeList = document.getElementById("code-list") as HTMLDivElement;
+const $aiCodeForm = document.getElementById("ai-code-form") as HTMLFormElement;
+const $aiCodeName = document.getElementById("ai-code-name") as HTMLInputElement;
+const $aiCodeSubmit = document.getElementById("ai-code-submit") as HTMLButtonElement;
+
+// AI settings modal.
+const $openAiSettings = document.getElementById("open-ai-settings") as HTMLButtonElement;
+const $aiModal = document.getElementById("ai-modal-backdrop") as HTMLDivElement;
+const $aiModalClose = document.getElementById("ai-modal-close") as HTMLButtonElement;
+const $aiForm = document.getElementById("ai-form") as HTMLFormElement;
+const $aiKey = document.getElementById("ai-key") as HTMLInputElement;
+const $aiModel = document.getElementById("ai-model") as HTMLSelectElement;
+const $aiRefreshModels = document.getElementById("ai-refresh-models") as HTMLButtonElement;
+const $aiTemp = document.getElementById("ai-temp") as HTMLInputElement;
+const $aiSubmit = document.getElementById("ai-submit") as HTMLButtonElement;
 
 // Languages modal.
 const $langModal = document.getElementById("lang-modal-backdrop") as HTMLDivElement;
@@ -74,6 +90,8 @@ type EventEntry = {
   id: string;
   name: string;
   languages: string[];
+  aiLanguages?: string[];
+  aiSourceLang?: string;
   backgroundExt?: string;
   createdAt: string;
   active?: boolean;
@@ -84,6 +102,7 @@ type CodeEntry = {
   eventId: string;
   language: string;
   name: string;
+  role?: "translator" | "ai-operator";
   createdAt: string;
   lastUsedAt?: string;
 };
@@ -153,6 +172,7 @@ document.addEventListener("keydown", (e) => {
   if (top === $newModal) closeNewEventModal();
   else if (top === $eventModal) closeEditEventModal();
   else if (top === $langModal) closeLanguagesModal();
+  else if (top === $aiModal) closeAiSettings();
 });
 
 // ---- Language picker (chip checkboxes) ------------------------------------
@@ -180,6 +200,42 @@ function selectedFromPicker(target: HTMLDivElement): string[] {
   return Array.from(
     target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked'),
   ).map((i) => i.value);
+}
+
+// Mutual exclusion: a code checked as a manual language is disabled in the AI
+// picker and vice versa. Re-derived on every change to either picker.
+function applyExclusion() {
+  const manual = new Set(selectedFromPicker($detailLanguages));
+  const ai = new Set(selectedFromPicker($detailAiLanguages));
+  const sync = (target: HTMLDivElement, blocked: Set<string>) => {
+    for (const input of target.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    )) {
+      const off = !input.checked && blocked.has(input.value);
+      input.disabled = off;
+      input.closest(".lang-chip")?.classList.toggle("disabled", off);
+    }
+  };
+  sync($detailLanguages, ai);
+  sync($detailAiLanguages, manual);
+}
+
+$detailLanguages.addEventListener("change", applyExclusion);
+$detailAiLanguages.addEventListener("change", applyExclusion);
+
+function renderAiSourceOptions(ev: EventEntry) {
+  $detailAiSource.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— none —";
+  $detailAiSource.appendChild(none);
+  for (const l of languages) {
+    const opt = document.createElement("option");
+    opt.value = l.code;
+    opt.textContent = `${l.flag}  ${l.name}`;
+    $detailAiSource.appendChild(opt);
+  }
+  $detailAiSource.value = ev.aiSourceLang ?? "";
 }
 
 // ---- Data loading ----------------------------------------------------------
@@ -392,6 +448,9 @@ function renderEditEventModal() {
     ev.createdAt,
   ).toLocaleDateString()} · click name to rename`;
   renderLangPicker($detailLanguages, new Set(ev.languages));
+  renderLangPicker($detailAiLanguages, new Set(ev.aiLanguages ?? []));
+  renderAiSourceOptions(ev);
+  applyExclusion();
   refreshDetailBackground();
   renderCodeLanguageOptions(ev);
   void refreshCodes();
@@ -452,6 +511,7 @@ function renderCodes(codes: CodeEntry[]) {
     return;
   }
   for (const c of codes) {
+    const isAi = c.role === "ai-operator";
     const lang = languages.find((l) => l.code === c.language);
     const row = document.createElement("div");
     row.className = "code-row";
@@ -462,10 +522,13 @@ function renderCodes(codes: CodeEntry[]) {
 
     const meta = document.createElement("div");
     meta.className = "code-meta";
-    const flag = lang?.flag ?? "🏳️";
-    const langName = lang?.name ?? c.language.toUpperCase();
+    const langChip = isAi
+      ? `<span class="code-lang ai-pill">🤖 AI operator</span>`
+      : `<span class="code-lang">${lang?.flag ?? "🏳️"} ${escapeHtml(
+          lang?.name ?? c.language.toUpperCase(),
+        )}</span>`;
     meta.innerHTML = `<strong>${escapeHtml(c.name)}</strong>
-      <span class="code-lang">${flag} ${escapeHtml(langName)}</span>
+      ${langChip}
       <span class="code-time">${formatRelative(
         c.lastUsedAt ?? c.createdAt,
         c.lastUsedAt ? "used" : "created",
@@ -505,16 +568,26 @@ $detailSaveLangs.addEventListener("click", async () => {
   const ev = currentEditEvent();
   if (!ev) return;
   const langs = selectedFromPicker($detailLanguages);
+  const aiLangs = selectedFromPicker($detailAiLanguages);
+  const aiSource = $detailAiSource.value || null;
   setButtonLoading($detailSaveLangs, true);
   try {
     const res = await authedFetch(`/api/admin/events/${ev.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ languages: langs }),
+      body: JSON.stringify({
+        languages: langs,
+        aiLanguages: aiLangs,
+        aiSourceLang: aiSource,
+      }),
     });
     if (res.status === 401) return signOut();
     if (!res.ok) {
-      toast(`Save failed (HTTP ${res.status})`, "error");
+      const body = await res.json().catch(() => ({}));
+      toast(
+        (body as { error?: string }).error ?? `Save failed (HTTP ${res.status})`,
+        "error",
+      );
       return;
     }
     toast("Languages saved.", "success");
@@ -655,6 +728,41 @@ $codeForm.addEventListener("submit", async (e) => {
     await refreshAll();
   } finally {
     setButtonLoading($codeSubmit, false);
+  }
+});
+
+$aiCodeForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const ev = currentEditEvent();
+  if (!ev) return;
+  const name = $aiCodeName.value.trim();
+  if (!name) {
+    toast("AI operator name is required.", "error");
+    $aiCodeName.focus();
+    return;
+  }
+  setButtonLoading($aiCodeSubmit, true);
+  try {
+    const res = await authedFetch("/api/admin/codes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ eventId: ev.id, name, role: "ai-operator" }),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      toast(
+        (body as { error?: string }).error ?? `Could not generate code (HTTP ${res.status})`,
+        "error",
+      );
+      return;
+    }
+    const created = (await res.json()) as CodeEntry;
+    toast(`AI-operator code ${created.code} created.`, "success");
+    $aiCodeName.value = "";
+    await refreshAll();
+  } finally {
+    setButtonLoading($aiCodeSubmit, false);
   }
 });
 
@@ -812,6 +920,109 @@ $addLangForm.addEventListener("submit", async (e) => {
   renderLanguageList();
 });
 
+// ---- AI settings modal -----------------------------------------------------
+
+let aiModelsLoaded = false;
+
+function closeAiSettings() {
+  closeModalEl($aiModal);
+}
+
+bindBackdropClose($aiModal, closeAiSettings);
+$openAiSettings.addEventListener("click", () => void openAiSettings());
+$aiModalClose.addEventListener("click", closeAiSettings);
+
+async function loadAiModels(selected?: string) {
+  setButtonLoading($aiRefreshModels, true);
+  try {
+    const res = await authedFetch("/api/admin/ai/models");
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      toast(`Could not load models (HTTP ${res.status})`, "error");
+      return;
+    }
+    const data = (await res.json()) as { models: { id: string; name: string }[] };
+    const current = selected ?? $aiModel.value;
+    $aiModel.innerHTML = "";
+    for (const m of data.models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.name;
+      $aiModel.appendChild(opt);
+    }
+    if (current) ensureModelOption(current);
+    aiModelsLoaded = true;
+  } finally {
+    setButtonLoading($aiRefreshModels, false);
+  }
+}
+
+// Keep a saved/custom model selectable even if it isn't in the catalogue.
+function ensureModelOption(model: string) {
+  if (!model) return;
+  if (!Array.from($aiModel.options).some((o) => o.value === model)) {
+    const opt = document.createElement("option");
+    opt.value = model;
+    opt.textContent = model;
+    $aiModel.appendChild(opt);
+  }
+  $aiModel.value = model;
+}
+
+async function openAiSettings() {
+  const res = await authedFetch("/api/admin/ai-config");
+  if (res.status === 401) return signOut();
+  if (!res.ok) {
+    toast(`Could not load AI settings (HTTP ${res.status})`, "error");
+    return;
+  }
+  const cfg = (await res.json()) as {
+    openRouterApiKey: string;
+    hasKey: boolean;
+    model: string;
+    temperature: number;
+  };
+  $aiKey.value = "";
+  $aiKey.placeholder = cfg.hasKey
+    ? `Saved (${cfg.openRouterApiKey}) — leave blank to keep`
+    : "sk-or-…";
+  $aiTemp.value = String(cfg.temperature ?? 0.3);
+  openModalEl($aiModal);
+  if (!aiModelsLoaded) {
+    await loadAiModels(cfg.model);
+  } else {
+    ensureModelOption(cfg.model);
+  }
+}
+
+$aiRefreshModels.addEventListener("click", () => void loadAiModels());
+
+$aiForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const payload: Record<string, unknown> = {
+    model: $aiModel.value,
+    temperature: Number($aiTemp.value),
+  };
+  if ($aiKey.value.trim()) payload.openRouterApiKey = $aiKey.value.trim();
+  setButtonLoading($aiSubmit, true);
+  try {
+    const res = await authedFetch("/api/admin/ai-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      toast(`Save failed (HTTP ${res.status})`, "error");
+      return;
+    }
+    toast("AI settings saved.", "success");
+    closeAiSettings();
+  } finally {
+    setButtonLoading($aiSubmit, false);
+  }
+});
+
 // ---- Default background ----------------------------------------------------
 
 $logoutBtn.addEventListener("click", signOut);
@@ -873,7 +1084,7 @@ $bgReset.addEventListener("click", async () => {
   $qrListenerUrl.textContent   = listenerUrl;
   $qrTranslatorUrl.textContent = translatorUrl;
 
-  const qrOpts: QRCode.QRCodeToCanvasOptions = {
+  const qrOpts: QRCode.QRCodeRenderersOptions = {
     width: 192,
     margin: 1,
     color: { dark: "#0f172a", light: "#ffffff" },

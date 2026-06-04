@@ -6,15 +6,21 @@ import {
   ConnectionState,
   Track,
 } from "livekit-client";
-import { livekitUrl } from "./livekit.js";
+import { livekitUrl, fetchLanguages } from "./livekit.js";
 import { loadTranslatorGrant, clearTranslatorGrant } from "./session.js";
 import { setButtonLoading } from "./ui.js";
+import { SentenceChunker } from "./ai/chunker.js";
+import { SpeechToText } from "./ai/stt.js";
+import { encodeCaption } from "./ai/types.js";
+import { AiOperator, type ChannelState } from "./ai/operator.js";
 
 const grant = loadTranslatorGrant();
 if (!grant) {
   location.replace("/translator-login.html");
   throw new Error("not authenticated");
 }
+
+const isAi = grant.role === "ai-operator";
 
 const $eventBanner = document.getElementById("event-banner") as HTMLDivElement;
 const $onAir = document.getElementById("on-air") as HTMLDivElement;
@@ -33,11 +39,20 @@ const $mute = document.getElementById("mute") as HTMLInputElement;
 const $muteLabel = document.getElementById("mute-label") as HTMLSpanElement;
 const $status = document.getElementById("status") as HTMLDivElement;
 const $level = document.getElementById("level") as HTMLDivElement;
+const $sourceLangLabel = document.getElementById("source-lang-label") as HTMLLabelElement;
+const $sourceLang = document.getElementById("source-lang") as HTMLSelectElement;
+const $aiChannels = document.getElementById("ai-channels") as HTMLDivElement;
 
 let room: Room | null = null;
 let track: LocalAudioTrack | null = null;
 let levelTimer: number | null = null;
 let micEnumerationToken = 0;
+
+// AI captions for the human-translator path (self-STT of their own mic).
+let stt: SpeechToText | null = null;
+let chunker: SentenceChunker | null = null;
+// AI operator pipeline (role = ai-operator).
+let operator: AiOperator | null = null;
 
 function setStatus(text: string, isError = false) {
   $status.textContent = text;
@@ -50,7 +65,58 @@ if (grant.eventName) {
 }
 
 $greeting.textContent = `Hello, ${grant.name}`;
-$translatorDetail.textContent = `Translating into ${grant.flag}  ${grant.languageName}`;
+if (isAi) {
+  const count = grant.aiLanguages?.length ?? 0;
+  $translatorDetail.textContent = `AI translation into ${count} language${count === 1 ? "" : "s"}`;
+  $sourceLangLabel.hidden = false;
+  $aiChannels.hidden = false;
+  renderAiChannels();
+  void populateSourceLanguages();
+} else {
+  $translatorDetail.textContent = `Translating into ${grant.flag ?? ""}  ${grant.languageName ?? ""}`;
+}
+
+async function populateSourceLanguages() {
+  try {
+    const langs = await fetchLanguages();
+    $sourceLang.innerHTML = "";
+    for (const l of langs) {
+      const opt = document.createElement("option");
+      opt.value = l.code;
+      opt.textContent = `${l.flag}  ${l.name}`;
+      $sourceLang.appendChild(opt);
+    }
+    if (grant?.sourceLang) $sourceLang.value = grant.sourceLang;
+  } catch {
+    setStatus("Could not load languages for the source picker.", true);
+  }
+}
+
+$sourceLang.addEventListener("change", () => {
+  operator?.setSourceLang($sourceLang.value);
+});
+
+// One status row per AI language channel.
+function renderAiChannels() {
+  $aiChannels.innerHTML = "";
+  for (const ai of grant?.aiLanguages ?? []) {
+    const row = document.createElement("div");
+    row.className = "ai-channel-row";
+    row.dataset.code = ai.code;
+    row.innerHTML = `<span class="ai-channel-lang">${ai.flag} ${ai.name}</span>
+      <span class="ai-channel-state" data-state="idle">idle</span>`;
+    $aiChannels.appendChild(row);
+  }
+}
+
+function setChannelState(code: string, state: ChannelState, detail?: string) {
+  const el = $aiChannels.querySelector<HTMLElement>(
+    `.ai-channel-row[data-code="${code}"] .ai-channel-state`,
+  );
+  if (!el) return;
+  el.dataset.state = state;
+  el.textContent = detail ? `${state} — ${detail}` : state;
+}
 
 function setOnAir(state: "off" | "live" | "muted" | "reconnecting") {
   if (state === "off") {
@@ -74,7 +140,8 @@ function setOnAir(state: "off" | "live" | "muted" | "reconnecting") {
 function setBroadcastUI(broadcasting: boolean) {
   $connect.hidden = broadcasting;
   $stop.hidden = !broadcasting;
-  $muteToggle.hidden = !broadcasting;
+  // The AI operator has no single live/mute audio track, so no mute toggle.
+  $muteToggle.hidden = !broadcasting || isAi;
   // While broadcasting, the mic select is disabled — switching device
   // mid-stream is jarring and rarely what you want.
   $mic.disabled = broadcasting;
@@ -297,7 +364,7 @@ async function connect() {
       teardownLive();
     });
 
-    await room.connect(livekitUrl(), grant.token);
+    await room.connect(livekitUrl(), grant.token!);
     await room.localParticipant.publishTrack(track, {
       source: Track.Source.Microphone,
     });
@@ -306,6 +373,7 @@ async function connect() {
     syncMuteState();
     setStatus("");
     startLiveLevelMeter(track);
+    startTranslatorCaptions(room, grant.language!);
   } catch (err) {
     console.error(err);
     setStatus(err instanceof Error ? err.message : "Could not start broadcast.", true);
@@ -315,8 +383,65 @@ async function connect() {
   }
 }
 
+// Transcribe the translator's own speech and publish it as captions into their
+// channel. Audio still broadcasts even if the browser lacks speech recognition.
+function startTranslatorCaptions(r: Room, lang: string) {
+  if (!SpeechToText.isSupported()) return;
+  chunker = new SentenceChunker((chunk) => {
+    const payload = encodeCaption({
+      type: "caption",
+      id: chunk.id,
+      text: chunk.text,
+      lang,
+      final: true,
+    });
+    void r.localParticipant.publishData(payload, { reliable: true, topic: "captions" });
+  });
+  stt = new SpeechToText(lang, {
+    onTranscript: (text) => chunker?.push(text),
+    onRestart: () => chunker?.reset(),
+  });
+  stt.start();
+}
+
+function stopCaptions() {
+  stt?.stop();
+  stt = null;
+  chunker?.stop();
+  chunker = null;
+}
+
+// AI operator: no listener audio track — transcribe the source mic and fan out
+// translated captions to every AI-language room.
+async function connectAi() {
+  setButtonLoading($connect, true);
+  setStatus("Connecting…");
+  try {
+    operator = new AiOperator(
+      grant!,
+      () => $sourceLang.value || grant!.sourceLang || "en",
+      (code, state, detail) => setChannelState(code, state, detail),
+    );
+    await operator.start();
+    setBroadcastUI(true);
+    setOnAir("live");
+    setStatus("");
+  } catch (err) {
+    console.error(err);
+    setStatus(err instanceof Error ? err.message : "Could not start AI translation.", true);
+    void teardownLive();
+  } finally {
+    setButtonLoading($connect, false);
+  }
+}
+
 function teardownLive() {
   stopLevelMeter();
+  stopCaptions();
+  if (operator) {
+    void operator.stop();
+    operator = null;
+  }
   if (track) {
     track.stop();
     track = null;
@@ -324,6 +449,11 @@ function teardownLive() {
   if (room) {
     void room.disconnect();
     room = null;
+  }
+  // Reset AI channel status rows back to idle.
+  for (const el of $aiChannels.querySelectorAll<HTMLElement>(".ai-channel-state")) {
+    el.dataset.state = "idle";
+    el.textContent = "idle";
   }
   setBroadcastUI(false);
   setOnAir("off");
@@ -339,7 +469,7 @@ function signOut() {
   location.replace("/translator-login.html");
 }
 
-$connect.addEventListener("click", () => void connect());
+$connect.addEventListener("click", () => void (isAi ? connectAi() : connect()));
 $stop.addEventListener("click", () => teardownLive());
 $signOut.addEventListener("click", () => signOut());
 

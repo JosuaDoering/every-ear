@@ -1,15 +1,30 @@
 // Session storage helpers shared between login pages and authenticated pages.
 
-export type TranslatorGrant = {
-  token: string;
-  room: string;
-  language: string;
-  languageName: string;
+export type AiLanguageGrant = {
+  code: string;
+  name: string;
   flag: string;
+  room: string;
+  token: string;
+};
+
+export type TranslatorGrant = {
+  role?: "translator" | "ai-operator";
+  // Present for role "translator" (a single language channel).
+  token?: string;
+  room?: string;
+  language?: string;
+  languageName?: string;
+  flag?: string;
   name: string;
   eventId: string;
   eventName: string;
   eventHasBackground: boolean;
+  /** STT engine selected in AI settings (e.g. "web-speech"). */
+  sttEngine?: string;
+  // Present for role "ai-operator".
+  sourceLang?: string;
+  aiLanguages?: AiLanguageGrant[];
 };
 
 type StoredGrant = TranslatorGrant & { savedAt: number };

@@ -13,6 +13,7 @@
         <h1>Administration</h1>
         <div class="admin-header-actions">
           <button id="open-languages" class="ghost"><span>Languages</span></button>
+          <button id="open-ai-settings" class="ghost"><span>AI settings</span></button>
           <button id="admin-logout" class="ghost"><span>Sign out</span></button>
         </div>
       </header>
@@ -129,12 +130,23 @@
               <input id="code-name" type="text" placeholder="Translator name" />
               <button type="submit" id="code-submit" class="primary"><span>Generate code</span></button>
             </form>
+            <form id="ai-code-form" class="code-form-row">
+              <input id="ai-code-name" type="text" placeholder="AI operator name" />
+              <button type="submit" id="ai-code-submit" class="secondary"><span>Generate AI-operator code</span></button>
+            </form>
           </div>
 
           <div class="admin-subblock">
             <h3>Languages</h3>
             <p class="hint">Pick which languages translators can broadcast on for this event.</p>
             <div id="detail-languages" class="lang-grid"></div>
+            <h4 class="ai-subhead">AI languages</h4>
+            <p class="hint">Covered by AI translation — subtitles and on-device read-aloud. A language can be manual or AI, never both.</p>
+            <div id="detail-ai-languages" class="lang-grid"></div>
+            <label class="ai-source-label">
+              AI source language
+              <select id="detail-ai-source" aria-label="AI source language"></select>
+            </label>
             <button type="button" class="primary small self-start" id="detail-save-langs">
               <span>Save languages</span>
             </button>
@@ -197,6 +209,39 @@
 
           <div id="lang-list" class="lang-list"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- AI settings modal -->
+    <div id="ai-modal-backdrop" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-labelledby="ai-modal-title" aria-modal="true">
+        <header class="modal-header">
+          <div class="modal-header-text">
+            <h2 id="ai-modal-title">AI settings</h2>
+            <p class="hint">OpenRouter powers automatic translation. The API key stays on the server and is never sent back to the browser.</p>
+          </div>
+          <button type="button" id="ai-modal-close" class="modal-close" aria-label="Close">×</button>
+        </header>
+        <form id="ai-form" class="modal-body">
+          <label>
+            OpenRouter API key
+            <input id="ai-key" type="password" placeholder="sk-or-…" autocomplete="off" />
+          </label>
+          <label>
+            Model
+            <div class="mic-row">
+              <select id="ai-model" aria-label="Model"></select>
+              <button type="button" id="ai-refresh-models" class="secondary mic-refresh" aria-label="Reload models" title="Reload models">↻</button>
+            </div>
+          </label>
+          <label>
+            Temperature
+            <input id="ai-temp" type="number" min="0" max="2" step="0.1" value="0.3" />
+          </label>
+          <div class="row modal-actions">
+            <button type="submit" id="ai-submit" class="primary"><span>Save AI settings</span></button>
+          </div>
+        </form>
       </div>
     </div>
 
