@@ -11,13 +11,13 @@ if (loadTranslatorGrant()) {
 
 const $otp = document.getElementById("otp") as HTMLDivElement;
 const $verifyBtn = document.getElementById("verify-code") as HTMLButtonElement;
-const $status = document.getElementById("status") as HTMLDivElement | null;
+const $status = document.getElementById("status") as HTMLDivElement;
 
 const otpInputs = Array.from($otp.querySelectorAll<HTMLInputElement>("input"));
 let verifying = false;
+let lastErrored = false;
 
 function setStatus(text: string, isError = false) {
-  if (!$status) return;
   $status.textContent = text;
   $status.classList.toggle("error", isError);
 }
@@ -40,6 +40,13 @@ function clearOtp() {
   updateVerifyButton();
 }
 
+function clearErrorState() {
+  if (!lastErrored) return;
+  lastErrored = false;
+  $otp.classList.remove("error");
+  setStatus("");
+}
+
 function shakeOtp() {
   $otp.classList.remove("error");
   void $otp.offsetWidth;
@@ -48,6 +55,7 @@ function shakeOtp() {
 
 otpInputs.forEach((input, idx) => {
   input.addEventListener("input", () => {
+    clearErrorState();
     const v = input.value;
     if (v.length > 1) {
       const digits = v.replace(/\D/g, "").slice(0, otpInputs.length - idx);
@@ -75,6 +83,7 @@ otpInputs.forEach((input, idx) => {
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Backspace") {
+      clearErrorState();
       if (input.value === "" && idx > 0) {
         e.preventDefault();
         const prev = otpInputs[idx - 1]!;
@@ -101,6 +110,7 @@ otpInputs.forEach((input, idx) => {
 
 $otp.addEventListener("paste", (e) => {
   e.preventDefault();
+  clearErrorState();
   const text = e.clipboardData?.getData("text") ?? "";
   const digits = text.replace(/\D/g, "").slice(0, otpInputs.length).split("");
   otpInputs.forEach((input, i) => {
@@ -138,13 +148,24 @@ async function verifyCode(code: string) {
     if (!res.ok) throw new Error(`Verification failed (${res.status}).`);
     const grant = (await res.json()) as TranslatorGrant;
     saveTranslatorGrant(grant);
-    setStatus("Signed in.");
+    setStatus("Signed in.", false);
     location.replace("/translator.html");
   } catch (err) {
     console.error(err);
     setStatus(err instanceof Error ? err.message : "Verification failed.", true);
     shakeOtp();
-    setTimeout(() => clearOtp(), 350);
+    lastErrored = true;
+    // Re-enable so the user can correct, but clear the digits so they retype.
+    for (const i of otpInputs) i.disabled = false;
+    setTimeout(() => {
+      // Keep the error styling — only blank the digits.
+      for (const i of otpInputs) {
+        i.value = "";
+        i.classList.remove("filled");
+      }
+      otpInputs[0]?.focus();
+      updateVerifyButton();
+    }, 800);
   } finally {
     verifying = false;
     for (const i of otpInputs) i.disabled = false;

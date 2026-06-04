@@ -1,5 +1,5 @@
 {
-  "name": "locallingua-frontend",
+  "name": "every-ear-frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,11 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "livekit-client": "^2.18.8"
+    "livekit-client": "^2.18.8",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.5",
     "typescript": "^5.9.3",
     "vite": "^6.3.5"
   }

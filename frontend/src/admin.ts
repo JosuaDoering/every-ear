@@ -1,5 +1,7 @@
+import QRCode from "qrcode";
 import { fetchLanguages, type Language } from "./livekit.js";
 import { loadAdminToken, clearAdminToken } from "./session.js";
+import { toast, confirmDialog, setButtonLoading, inlineEdit } from "./ui.js";
 
 const token = loadAdminToken();
 if (!token) {
@@ -10,23 +12,22 @@ if (!token) {
 const $logoutBtn = document.getElementById("admin-logout") as HTMLButtonElement;
 const $openLanguages = document.getElementById("open-languages") as HTMLButtonElement;
 
-const $eventTableBody = document.getElementById("event-table-body") as HTMLDivElement;
-const $openNewEvent = document.getElementById("open-new-event") as HTMLButtonElement;
+const $eventGrid = document.getElementById("event-grid") as HTMLDivElement;
 
 // New-event modal.
 const $newModal = document.getElementById("modal-backdrop") as HTMLDivElement;
 const $newModalClose = document.getElementById("modal-close") as HTMLButtonElement;
 const $newModalCancel = document.getElementById("modal-cancel") as HTMLButtonElement;
 const $eventForm = document.getElementById("event-form") as HTMLFormElement;
-const $eventName = document.getElementById("event-name") as HTMLInputElement;
-const $eventLanguages = document.getElementById("event-languages") as HTMLDivElement;
+const $eventNameInput = document.getElementById("event-name") as HTMLInputElement;
+const $eventLanguagesPicker = document.getElementById("event-languages") as HTMLDivElement;
+const $modalSubmit = document.getElementById("modal-submit") as HTMLButtonElement;
 
 // Edit-event modal.
 const $eventModal = document.getElementById("event-modal-backdrop") as HTMLDivElement;
 const $eventModalClose = document.getElementById("event-modal-close") as HTMLButtonElement;
 const $detailName = document.getElementById("detail-name") as HTMLHeadingElement;
 const $detailMeta = document.getElementById("detail-meta") as HTMLParagraphElement;
-const $detailRename = document.getElementById("detail-rename") as HTMLButtonElement;
 const $detailLanguages = document.getElementById("detail-languages") as HTMLDivElement;
 const $detailSaveLangs = document.getElementById("detail-save-langs") as HTMLButtonElement;
 const $detailBgPreview = document.getElementById("detail-bg-preview") as HTMLDivElement;
@@ -35,10 +36,14 @@ const $detailBgFile = document.getElementById("detail-bg-file") as HTMLInputElem
 const $detailBgFilename = document.getElementById("detail-bg-filename") as HTMLSpanElement;
 const $detailBgReset = document.getElementById("detail-bg-reset") as HTMLButtonElement;
 const $detailDelete = document.getElementById("detail-delete") as HTMLButtonElement;
+const $detailToggleActive = document.getElementById("detail-toggle-active") as HTMLButtonElement;
+const $detailStatusLabel = document.getElementById("detail-status-label") as HTMLElement;
+const $detailStatusZone = $detailToggleActive.closest(".status-zone") as HTMLDivElement;
 
 const $codeLanguage = document.getElementById("code-language") as HTMLSelectElement;
 const $codeName = document.getElementById("code-name") as HTMLInputElement;
 const $codeForm = document.getElementById("code-form") as HTMLFormElement;
+const $codeSubmit = document.getElementById("code-submit") as HTMLButtonElement;
 const $codeList = document.getElementById("code-list") as HTMLDivElement;
 
 // Languages modal.
@@ -50,6 +55,14 @@ const $addLangCode = document.getElementById("add-lang-code") as HTMLInputElemen
 const $addLangFlag = document.getElementById("add-lang-flag") as HTMLInputElement;
 const $addLangName = document.getElementById("add-lang-name") as HTMLInputElement;
 
+// QR codes.
+const $qrListener   = document.getElementById("qr-listener")     as HTMLCanvasElement;
+const $qrTranslator = document.getElementById("qr-translator")   as HTMLCanvasElement;
+const $qrListenerUrl   = document.getElementById("qr-listener-url")   as HTMLElement;
+const $qrTranslatorUrl = document.getElementById("qr-translator-url") as HTMLElement;
+const $copyListener   = document.getElementById("copy-listener")   as HTMLButtonElement;
+const $copyTranslator = document.getElementById("copy-translator") as HTMLButtonElement;
+
 // Default-background block.
 const $bgForm = document.getElementById("bg-form") as HTMLFormElement;
 const $bgFile = document.getElementById("bg-file") as HTMLInputElement;
@@ -57,14 +70,13 @@ const $bgFilename = document.getElementById("bg-filename") as HTMLSpanElement;
 const $bgPreview = document.getElementById("bg-preview") as HTMLDivElement;
 const $bgReset = document.getElementById("bg-reset") as HTMLButtonElement;
 
-const $status = document.getElementById("status") as HTMLDivElement;
-
 type EventEntry = {
   id: string;
   name: string;
   languages: string[];
   backgroundExt?: string;
   createdAt: string;
+  active?: boolean;
 };
 
 type CodeEntry = {
@@ -80,13 +92,6 @@ let languages: Language[] = [];
 let events: EventEntry[] = [];
 let codeCounts = new Map<string, number>();
 let openEditEventId: string | null = null;
-
-function setStatus(text: string, kind: "info" | "error" | "ok" = "info") {
-  $status.textContent = text;
-  $status.classList.remove("error", "ok");
-  if (kind === "error") $status.classList.add("error");
-  else if (kind === "ok") $status.classList.add("ok");
-}
 
 function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
@@ -162,10 +167,9 @@ function renderLangPicker(target: HTMLDivElement, selected: Set<string>) {
     return;
   }
   for (const l of languages) {
-    const id = `${target.id}-${l.code}`;
     const wrap = document.createElement("label");
     wrap.className = "lang-chip";
-    wrap.innerHTML = `<input type="checkbox" id="${id}" value="${l.code}" ${
+    wrap.innerHTML = `<input type="checkbox" value="${escapeHtml(l.code)}" ${
       selected.has(l.code) ? "checked" : ""
     }><span>${l.flag} ${escapeHtml(l.name)}</span>`;
     target.appendChild(wrap);
@@ -191,7 +195,7 @@ async function fetchAllCodes(): Promise<CodeEntry[]> {
     return [];
   }
   if (!res.ok) {
-    setStatus(`Failed to load codes (HTTP ${res.status})`, "error");
+    toast(`Failed to load codes (HTTP ${res.status})`, "error");
     return [];
   }
   const data = (await res.json()) as { codes: CodeEntry[] };
@@ -206,7 +210,7 @@ async function refreshAll() {
   ]);
   if (eventsRes.status === 401) return signOut();
   if (!eventsRes.ok) {
-    setStatus(`Failed to load events (HTTP ${eventsRes.status})`, "error");
+    toast(`Failed to load events (HTTP ${eventsRes.status})`, "error");
     return;
   }
   const data = (await eventsRes.json()) as { events: EventEntry[] };
@@ -215,7 +219,7 @@ async function refreshAll() {
   for (const c of allCodes) {
     codeCounts.set(c.eventId, (codeCounts.get(c.eventId) ?? 0) + 1);
   }
-  renderEventTable();
+  renderEventGrid();
   if (openEditEventId) {
     const stillExists = events.some((e) => e.id === openEditEventId);
     if (!stillExists) {
@@ -226,53 +230,72 @@ async function refreshAll() {
   }
 }
 
-// ---- Event table -----------------------------------------------------------
+// ---- Event card grid -------------------------------------------------------
 
-function renderEventTable() {
-  $eventTableBody.innerHTML = "";
+function renderEventGrid() {
+  $eventGrid.innerHTML = "";
+
   if (events.length === 0) {
     const empty = document.createElement("div");
-    empty.className = "event-table-empty";
-    empty.textContent = "No events yet — use “＋ New event” to create one.";
-    $eventTableBody.appendChild(empty);
-    return;
-  }
-  for (const e of events) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "event-table-row";
-    const langChips = e.languages
-      .map((c) => languages.find((l) => l.code === c))
-      .filter((l): l is Language => Boolean(l))
-      .map(
-        (l) =>
-          `<span class="event-lang-chip" title="${escapeHtml(l.name)}">${l.flag}</span>`,
-      )
-      .join("");
-    const langCell = langChips || '<span class="muted">none</span>';
-    const codeCount = codeCounts.get(e.id) ?? 0;
-    const bgCell = e.backgroundExt
-      ? `<span class="bg-pill on">Custom</span>`
-      : `<span class="bg-pill">Default</span>`;
+    empty.className = "event-empty";
+    empty.innerHTML = `
+      <span class="icon">📅</span>
+      <span class="title">No events yet</span>
+      <span>Create your first one to start handing out translator codes.</span>`;
+    $eventGrid.appendChild(empty);
+  } else {
+    for (const e of events) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "event-card";
+      const langChips = e.languages
+        .map((c) => languages.find((l) => l.code === c))
+        .filter((l): l is Language => Boolean(l))
+        .map((l) => `<span title="${escapeHtml(l.name)}">${l.flag}</span>`)
+        .join("");
+      const codeCount = codeCounts.get(e.id) ?? 0;
+      const bgChip = e.backgroundExt
+        ? `<span class="bg-pill on">Custom image</span>`
+        : `<span class="bg-pill">Default image</span>`;
+      const created = new Date(e.createdAt).toLocaleDateString();
 
-    row.innerHTML = `
-      <div class="cell-name">${escapeHtml(e.name)}</div>
-      <div class="cell-langs">${langCell}</div>
-      <div class="cell-num">${codeCount}</div>
-      <div class="cell-bg">${bgCell}</div>
-      <div class="cell-chevron" aria-hidden="true">›</div>`;
-    row.addEventListener("click", () => openEditEventModal(e.id));
-    $eventTableBody.appendChild(row);
+      const isInactive = e.active === false;
+      if (isInactive) card.classList.add("inactive");
+      const inactiveBadge = isInactive
+        ? `<span class="inactive-pill">Inactive</span>`
+        : "";
+      card.innerHTML = `
+        <div class="event-card-name">${escapeHtml(e.name)}</div>
+        <div class="event-card-langs">${langChips || '<span class="muted">no languages</span>'}</div>
+        <div class="event-card-meta">
+          <span>${codeCount} code${codeCount === 1 ? "" : "s"}</span>
+          <span>·</span>
+          ${bgChip}
+          <span>·</span>
+          <span>created ${created}</span>
+          ${inactiveBadge ? `<span>·</span>${inactiveBadge}` : ""}
+        </div>`;
+      card.addEventListener("click", () => openEditEventModal(e.id));
+      $eventGrid.appendChild(card);
+    }
   }
+
+  // Always append "new event" tile at the end of the grid.
+  const newCard = document.createElement("button");
+  newCard.type = "button";
+  newCard.className = "event-card new";
+  newCard.innerHTML = `<span class="plus">＋</span><span>New event</span>`;
+  newCard.addEventListener("click", openNewEventModal);
+  $eventGrid.appendChild(newCard);
 }
 
 // ---- New event modal -------------------------------------------------------
 
 function openNewEventModal() {
-  $eventName.value = "";
-  renderLangPicker($eventLanguages, new Set());
+  $eventNameInput.value = "";
+  renderLangPicker($eventLanguagesPicker, new Set());
   openModalEl($newModal);
-  setTimeout(() => $eventName.focus(), 0);
+  setTimeout(() => $eventNameInput.focus(), 0);
 }
 
 function closeNewEventModal() {
@@ -280,32 +303,37 @@ function closeNewEventModal() {
 }
 
 bindBackdropClose($newModal, closeNewEventModal);
-$openNewEvent.addEventListener("click", openNewEventModal);
 $newModalClose.addEventListener("click", closeNewEventModal);
 $newModalCancel.addEventListener("click", closeNewEventModal);
 
 $eventForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const name = $eventName.value.trim();
+  const name = $eventNameInput.value.trim();
   if (!name) {
-    setStatus("Event name is required.", "error");
+    toast("Event name is required.", "error");
+    $eventNameInput.focus();
     return;
   }
-  const langs = selectedFromPicker($eventLanguages);
-  const res = await authedFetch("/api/admin/events", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, languages: langs }),
-  });
-  if (res.status === 401) return signOut();
-  if (!res.ok) {
-    setStatus(`Could not create event (HTTP ${res.status})`, "error");
-    return;
+  const langs = selectedFromPicker($eventLanguagesPicker);
+  setButtonLoading($modalSubmit, true);
+  try {
+    const res = await authedFetch("/api/admin/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, languages: langs }),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      toast(`Could not create event (HTTP ${res.status})`, "error");
+      return;
+    }
+    const created = (await res.json()) as EventEntry;
+    toast(`Event "${created.name}" created.`, "success");
+    closeNewEventModal();
+    await refreshAll();
+  } finally {
+    setButtonLoading($modalSubmit, false);
   }
-  const created = (await res.json()) as EventEntry;
-  setStatus(`Event "${created.name}" created.`, "ok");
-  closeNewEventModal();
-  await refreshAll();
 });
 
 // ---- Edit event modal ------------------------------------------------------
@@ -329,18 +357,49 @@ function closeEditEventModal() {
 bindBackdropClose($eventModal, closeEditEventModal);
 $eventModalClose.addEventListener("click", closeEditEventModal);
 
+// Inline-edit setup for the heading. Runs once at startup; the heading element
+// stays the same across openings of the modal, only its textContent changes.
+inlineEdit({
+  element: $detailName,
+  onCommit: async (next) => {
+    const ev = currentEditEvent();
+    if (!ev || next === ev.name) return;
+    const res = await authedFetch(`/api/admin/events/${ev.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: next }),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      toast(`Rename failed (HTTP ${res.status})`, "error");
+      // Revert local UI to the saved name.
+      $detailName.textContent = ev.name;
+      return;
+    }
+    toast(`Renamed to "${next}".`, "success");
+    await refreshAll();
+  },
+});
+
 function renderEditEventModal() {
   const ev = currentEditEvent();
   if (!ev) return;
   $detailName.textContent = ev.name;
   const codeCount = codeCounts.get(ev.id) ?? 0;
-  $detailMeta.textContent = `${ev.languages.length} languages · ${codeCount} codes · created ${new Date(
+  $detailMeta.textContent = `${ev.languages.length} language${
+    ev.languages.length === 1 ? "" : "s"
+  } · ${codeCount} code${codeCount === 1 ? "" : "s"} · created ${new Date(
     ev.createdAt,
-  ).toLocaleDateString()}`;
+  ).toLocaleDateString()} · click name to rename`;
   renderLangPicker($detailLanguages, new Set(ev.languages));
   refreshDetailBackground();
   renderCodeLanguageOptions(ev);
   void refreshCodes();
+
+  const isActive = ev.active !== false;
+  $detailStatusLabel.textContent = isActive ? "Event is active" : "Event is inactive";
+  $detailToggleActive.querySelector("span")!.textContent = isActive ? "Deactivate" : "Activate";
+  $detailStatusZone.classList.toggle("is-inactive", !isActive);
 }
 
 function refreshDetailBackground() {
@@ -376,7 +435,7 @@ async function refreshCodes() {
   );
   if (res.status === 401) return signOut();
   if (!res.ok) {
-    setStatus(`Failed to load codes (HTTP ${res.status})`, "error");
+    toast(`Failed to load codes (HTTP ${res.status})`, "error");
     return;
   }
   const data = (await res.json()) as { codes: CodeEntry[] };
@@ -413,9 +472,9 @@ function renderCodes(codes: CodeEntry[]) {
       )}</span>`;
 
     const revoke = document.createElement("button");
-    revoke.className = "danger small";
+    revoke.className = "danger outline small";
     revoke.innerHTML = "<span>Revoke</span>";
-    revoke.addEventListener("click", () => revokeCode(c.code));
+    revoke.addEventListener("click", () => revokeCode(c.code, c.name));
 
     row.appendChild(codeEl);
     row.appendChild(meta);
@@ -424,53 +483,45 @@ function renderCodes(codes: CodeEntry[]) {
   }
 }
 
-async function revokeCode(code: string) {
-  if (!confirm(`Revoke code ${code}? Translator using it will be locked out.`)) return;
+async function revokeCode(code: string, name: string) {
+  const ok = await confirmDialog({
+    title: `Revoke code ${code}?`,
+    message: `${name} won't be able to broadcast until you generate a new code.`,
+    confirmLabel: "Revoke code",
+    danger: true,
+  });
+  if (!ok) return;
   const res = await authedFetch(`/api/admin/codes/${code}`, { method: "DELETE" });
   if (res.status === 401) return signOut();
   if (!res.ok) {
-    setStatus(`Revoke failed (HTTP ${res.status})`, "error");
+    toast(`Revoke failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus(`Code ${code} revoked.`, "ok");
+  toast(`Code ${code} revoked.`, "success");
   await refreshAll();
 }
-
-$detailRename.addEventListener("click", async () => {
-  const ev = currentEditEvent();
-  if (!ev) return;
-  const next = prompt("Event name:", ev.name)?.trim();
-  if (!next || next === ev.name) return;
-  const res = await authedFetch(`/api/admin/events/${ev.id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: next }),
-  });
-  if (res.status === 401) return signOut();
-  if (!res.ok) {
-    setStatus(`Rename failed (HTTP ${res.status})`, "error");
-    return;
-  }
-  setStatus(`Renamed to "${next}".`, "ok");
-  await refreshAll();
-});
 
 $detailSaveLangs.addEventListener("click", async () => {
   const ev = currentEditEvent();
   if (!ev) return;
   const langs = selectedFromPicker($detailLanguages);
-  const res = await authedFetch(`/api/admin/events/${ev.id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ languages: langs }),
-  });
-  if (res.status === 401) return signOut();
-  if (!res.ok) {
-    setStatus(`Save failed (HTTP ${res.status})`, "error");
-    return;
+  setButtonLoading($detailSaveLangs, true);
+  try {
+    const res = await authedFetch(`/api/admin/events/${ev.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ languages: langs }),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      toast(`Save failed (HTTP ${res.status})`, "error");
+      return;
+    }
+    toast("Languages saved.", "success");
+    await refreshAll();
+  } finally {
+    setButtonLoading($detailSaveLangs, false);
   }
-  setStatus("Languages saved.", "ok");
-  await refreshAll();
 });
 
 $detailBgFile.addEventListener("change", () => {
@@ -484,7 +535,7 @@ $detailBgForm.addEventListener("submit", async (e) => {
   if (!ev) return;
   const f = $detailBgFile.files?.[0];
   if (!f) {
-    setStatus("Pick an image first.", "error");
+    toast("Pick an image first.", "error");
     return;
   }
   const fd = new FormData();
@@ -496,10 +547,13 @@ $detailBgForm.addEventListener("submit", async (e) => {
   if (res.status === 401) return signOut();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    setStatus((body as { error?: string }).error ?? `Upload failed (HTTP ${res.status})`, "error");
+    toast(
+      (body as { error?: string }).error ?? `Upload failed (HTTP ${res.status})`,
+      "error",
+    );
     return;
   }
-  setStatus("Event background updated.", "ok");
+  toast("Event background updated.", "success");
   $detailBgFile.value = "";
   $detailBgFilename.textContent = "No file chosen";
   refreshDetailBackground();
@@ -509,31 +563,61 @@ $detailBgForm.addEventListener("submit", async (e) => {
 $detailBgReset.addEventListener("click", async () => {
   const ev = currentEditEvent();
   if (!ev) return;
-  if (!confirm("Use the default background for this event?")) return;
+  const ok = await confirmDialog({
+    title: "Use default background?",
+    message: "This event will fall back to the default image.",
+    confirmLabel: "Use default",
+  });
+  if (!ok) return;
   const res = await authedFetch(`/api/admin/events/${ev.id}/background`, {
     method: "DELETE",
   });
   if (res.status === 401) return signOut();
   if (!res.ok) {
-    setStatus(`Reset failed (HTTP ${res.status})`, "error");
+    toast(`Reset failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus("Event background cleared.", "ok");
+  toast("Event background cleared.", "success");
   refreshDetailBackground();
+  await refreshAll();
+});
+
+$detailToggleActive.addEventListener("click", async () => {
+  const ev = currentEditEvent();
+  if (!ev) return;
+  const isActive = ev.active !== false;
+  const res = await authedFetch(`/api/admin/events/${ev.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ active: !isActive }),
+  });
+  if (res.status === 401) return signOut();
+  if (!res.ok) {
+    toast(`Update failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  toast(isActive ? `"${ev.name}" set to inactive.` : `"${ev.name}" is active again.`, "success");
   await refreshAll();
 });
 
 $detailDelete.addEventListener("click", async () => {
   const ev = currentEditEvent();
   if (!ev) return;
-  if (!confirm(`Delete event "${ev.name}" and all its codes? This cannot be undone.`)) return;
+  const ok = await confirmDialog({
+    title: `Delete "${ev.name}"?`,
+    message:
+      "Removes the event and every translator code attached to it. This cannot be undone.",
+    confirmLabel: "Delete event",
+    danger: true,
+  });
+  if (!ok) return;
   const res = await authedFetch(`/api/admin/events/${ev.id}`, { method: "DELETE" });
   if (res.status === 401) return signOut();
   if (!res.ok) {
-    setStatus(`Delete failed (HTTP ${res.status})`, "error");
+    toast(`Delete failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus(`Event "${ev.name}" deleted.`, "ok");
+  toast(`Event "${ev.name}" deleted.`, "success");
   closeEditEventModal();
   await refreshAll();
 });
@@ -545,27 +629,33 @@ $codeForm.addEventListener("submit", async (e) => {
   const language = $codeLanguage.value;
   const name = $codeName.value.trim();
   if (!language) {
-    setStatus("Pick a language for the code.", "error");
+    toast("Pick a language for the code.", "error");
     return;
   }
   if (!name) {
-    setStatus("Translator name is required.", "error");
+    toast("Translator name is required.", "error");
+    $codeName.focus();
     return;
   }
-  const res = await authedFetch("/api/admin/codes", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ eventId: ev.id, language, name }),
-  });
-  if (res.status === 401) return signOut();
-  if (!res.ok) {
-    setStatus(`Could not generate code (HTTP ${res.status})`, "error");
-    return;
+  setButtonLoading($codeSubmit, true);
+  try {
+    const res = await authedFetch("/api/admin/codes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ eventId: ev.id, language, name }),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      toast(`Could not generate code (HTTP ${res.status})`, "error");
+      return;
+    }
+    const created = (await res.json()) as CodeEntry;
+    toast(`Code ${created.code} created for ${created.name}.`, "success");
+    $codeName.value = "";
+    await refreshAll();
+  } finally {
+    setButtonLoading($codeSubmit, false);
   }
-  const created = (await res.json()) as CodeEntry;
-  setStatus(`Code ${created.code} created for ${created.name}.`, "ok");
-  $codeName.value = "";
-  await refreshAll();
 });
 
 // ---- Languages modal -------------------------------------------------------
@@ -587,38 +677,70 @@ bindBackdropClose($langModal, closeLanguagesModal);
 $openLanguages.addEventListener("click", openLanguagesModal);
 $langModalClose.addEventListener("click", closeLanguagesModal);
 
+// Debounced auto-save for language rows.
+const langSaveTimers = new Map<string, number>();
+function scheduleLanguageSave(
+  code: string,
+  flagInput: HTMLInputElement,
+  nameInput: HTMLInputElement,
+  marker: HTMLSpanElement,
+) {
+  const existing = langSaveTimers.get(code);
+  if (existing) clearTimeout(existing);
+  const t = window.setTimeout(
+    () => void saveLanguage(code, nameInput.value, flagInput.value, marker),
+    500,
+  );
+  langSaveTimers.set(code, t);
+}
+
 function renderLanguageList() {
   $langList.innerHTML = "";
   if (languages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "No languages configured yet.";
+    empty.textContent = "No languages configured yet — add one above.";
     $langList.appendChild(empty);
     return;
   }
+  const header = document.createElement("div");
+  header.className = "lang-table-header";
+  header.innerHTML = `<span>Code</span><span>Flag</span><span>Name</span><span></span>`;
+  $langList.appendChild(header);
   for (const l of languages) {
     const row = document.createElement("div");
     row.className = "lang-row";
     row.innerHTML = `
       <span class="lang-row-code">${escapeHtml(l.code)}</span>
-      <input class="lang-row-flag" type="text" maxlength="6" value="${escapeHtml(l.flag)}" />
-      <input class="lang-row-name" type="text" value="${escapeHtml(l.name)}" />
-      <button type="button" class="ghost small lang-row-save"><span>Save</span></button>
-      <button type="button" class="danger small lang-row-remove"><span>Remove</span></button>`;
+      <input class="lang-row-flag" type="text" maxlength="6" value="${escapeHtml(l.flag)}" aria-label="Flag" />
+      <input class="lang-row-name" type="text" value="${escapeHtml(l.name)}" aria-label="Display name" />
+      <div class="lang-row-actions">
+        <span class="saved-mark">✓</span>
+        <button type="button" class="danger outline small lang-row-remove"><span>Remove</span></button>
+      </div>`;
     const flagInput = row.querySelector<HTMLInputElement>(".lang-row-flag")!;
     const nameInput = row.querySelector<HTMLInputElement>(".lang-row-name")!;
-    const saveBtn = row.querySelector<HTMLButtonElement>(".lang-row-save")!;
+    const marker = row.querySelector<HTMLSpanElement>(".saved-mark")!;
     const removeBtn = row.querySelector<HTMLButtonElement>(".lang-row-remove")!;
 
-    saveBtn.addEventListener("click", () =>
-      saveLanguage(l.code, nameInput.value, flagInput.value),
+    flagInput.addEventListener("input", () =>
+      scheduleLanguageSave(l.code, flagInput, nameInput, marker),
+    );
+    nameInput.addEventListener("input", () =>
+      scheduleLanguageSave(l.code, flagInput, nameInput, marker),
     );
     removeBtn.addEventListener("click", () => removeLanguage(l.code, l.name));
     $langList.appendChild(row);
   }
 }
 
-async function saveLanguage(code: string, name: string, flag: string) {
+async function saveLanguage(
+  code: string,
+  name: string,
+  flag: string,
+  marker?: HTMLSpanElement,
+) {
+  if (!name.trim()) return; // Skip empty saves.
   const res = await authedFetch(`/api/admin/languages/${encodeURIComponent(code)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -627,30 +749,37 @@ async function saveLanguage(code: string, name: string, flag: string) {
   if (res.status === 401) return signOut();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    setStatus((body as { error?: string }).error ?? `Save failed (HTTP ${res.status})`, "error");
+    toast((body as { error?: string }).error ?? `Save failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus(`Language "${code}" saved.`, "ok");
-  await refreshAll();
-  renderLanguageList();
+  if (marker) {
+    marker.classList.add("visible");
+    setTimeout(() => marker.classList.remove("visible"), 1500);
+  }
+  await loadLanguages();
+  // Re-render the event grid so flags stay consistent, but don't re-render the
+  // languages modal list (would steal focus from whatever input is being edited).
+  renderEventGrid();
 }
 
 async function removeLanguage(code: string, name: string) {
-  if (
-    !confirm(
-      `Remove language "${name}"? It will be stripped from every event and any codes for it will be revoked.`,
-    )
-  )
-    return;
+  const ok = await confirmDialog({
+    title: `Remove "${name}"?`,
+    message:
+      "It will be stripped from every event and any codes for it will be revoked.",
+    confirmLabel: "Remove language",
+    danger: true,
+  });
+  if (!ok) return;
   const res = await authedFetch(`/api/admin/languages/${encodeURIComponent(code)}`, {
     method: "DELETE",
   });
   if (res.status === 401) return signOut();
   if (!res.ok) {
-    setStatus(`Remove failed (HTTP ${res.status})`, "error");
+    toast(`Remove failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus(`Language "${name}" removed.`, "ok");
+  toast(`Language "${name}" removed.`, "success");
   await refreshAll();
   renderLanguageList();
 }
@@ -661,7 +790,7 @@ $addLangForm.addEventListener("submit", async (e) => {
   const name = $addLangName.value.trim();
   const flag = $addLangFlag.value.trim();
   if (!code || !name) {
-    setStatus("Code and name are required.", "error");
+    toast("Code and name are required.", "error");
     return;
   }
   const res = await authedFetch("/api/admin/languages", {
@@ -672,10 +801,10 @@ $addLangForm.addEventListener("submit", async (e) => {
   if (res.status === 401) return signOut();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    setStatus((body as { error?: string }).error ?? `Add failed (HTTP ${res.status})`, "error");
+    toast((body as { error?: string }).error ?? `Add failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus(`Language "${name}" added.`, "ok");
+  toast(`Language "${name}" added.`, "success");
   $addLangCode.value = "";
   $addLangFlag.value = "";
   $addLangName.value = "";
@@ -700,7 +829,7 @@ $bgForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = $bgFile.files?.[0];
   if (!f) {
-    setStatus("Pick an image first.", "error");
+    toast("Pick an image first.", "error");
     return;
   }
   const fd = new FormData();
@@ -709,26 +838,58 @@ $bgForm.addEventListener("submit", async (e) => {
   if (res.status === 401) return signOut();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    setStatus((body as { error?: string }).error ?? `Upload failed (HTTP ${res.status})`, "error");
+    toast((body as { error?: string }).error ?? `Upload failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus("Default background updated.", "ok");
+  toast("Default background updated.", "success");
   $bgFile.value = "";
   $bgFilename.textContent = "No file chosen";
   await refreshGlobalBackgroundPreview();
 });
 
 $bgReset.addEventListener("click", async () => {
-  if (!confirm("Reset default background to the bundled image?")) return;
+  const ok = await confirmDialog({
+    title: "Reset default background?",
+    message: "Falls back to the image shipped with Every Ear.",
+    confirmLabel: "Reset",
+  });
+  if (!ok) return;
   const res = await authedFetch("/api/admin/background", { method: "DELETE" });
   if (res.status === 401) return signOut();
   if (!res.ok) {
-    setStatus(`Reset failed (HTTP ${res.status})`, "error");
+    toast(`Reset failed (HTTP ${res.status})`, "error");
     return;
   }
-  setStatus("Default background reset.", "ok");
+  toast("Default background reset.", "success");
   await refreshGlobalBackgroundPreview();
 });
+
+// ---- QR codes -------------------------------------------------------------
+
+(function renderQrCodes() {
+  const listenerUrl   = window.location.origin + "/";
+  const translatorUrl = window.location.origin + "/translator-login.html";
+
+  $qrListenerUrl.textContent   = listenerUrl;
+  $qrTranslatorUrl.textContent = translatorUrl;
+
+  const qrOpts: QRCode.QRCodeToCanvasOptions = {
+    width: 192,
+    margin: 1,
+    color: { dark: "#0f172a", light: "#ffffff" },
+  };
+  void QRCode.toCanvas($qrListener,   listenerUrl,   qrOpts);
+  void QRCode.toCanvas($qrTranslator, translatorUrl, qrOpts);
+
+  $copyListener.addEventListener("click", () => {
+    void navigator.clipboard.writeText(listenerUrl)
+      .then(() => toast("Listener URL copied.", "success"));
+  });
+  $copyTranslator.addEventListener("click", () => {
+    void navigator.clipboard.writeText(translatorUrl)
+      .then(() => toast("Translator URL copied.", "success"));
+  });
+})();
 
 (async () => {
   const ping = await authedFetch("/api/admin/login");

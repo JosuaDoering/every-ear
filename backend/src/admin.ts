@@ -128,11 +128,12 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
 
   app.put<{
     Params: { id: string };
-    Body: { name?: string; languages?: string[] };
+    Body: { name?: string; languages?: string[]; active?: boolean };
   }>("/events/:id", async (req, reply) => {
-    const patch: { name?: string; languages?: string[] } = {};
+    const patch: { name?: string; languages?: string[]; active?: boolean } = {};
     if (typeof req.body?.name === "string") patch.name = req.body.name.trim();
     if (Array.isArray(req.body?.languages)) patch.languages = req.body.languages;
+    if (typeof req.body?.active === "boolean") patch.active = req.body.active;
     const updated = await updateEvent(req.params.id, patch);
     if (!updated) return reply.code(404).send({ error: "not found" });
     return updated;

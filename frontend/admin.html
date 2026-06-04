@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#06101c" />
-    <title>LocalLingua · Administration</title>
+    <meta name="theme-color" content="#ffffff" />
+    <title>Every Ear · Administration</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body class="admin-body">
@@ -18,6 +18,35 @@
       </header>
 
       <section class="admin-block">
+        <h2>Access Links</h2>
+        <p class="hint">Share these links or QR codes so listeners and translators can connect.</p>
+        <div class="qr-grid">
+          <div class="qr-card">
+            <h3>Listener</h3>
+            <p class="hint">Scan to listen to live translations.</p>
+            <div class="qr-canvas-wrap">
+              <canvas id="qr-listener"></canvas>
+            </div>
+            <div class="qr-url-row">
+              <code id="qr-listener-url" class="qr-url"></code>
+              <button id="copy-listener" class="ghost small" type="button">Copy</button>
+            </div>
+          </div>
+          <div class="qr-card">
+            <h3>Translator</h3>
+            <p class="hint">Scan to log in and broadcast a language.</p>
+            <div class="qr-canvas-wrap">
+              <canvas id="qr-translator"></canvas>
+            </div>
+            <div class="qr-url-row">
+              <code id="qr-translator-url" class="qr-url"></code>
+              <button id="copy-translator" class="ghost small" type="button">Copy</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="admin-block">
         <div class="block-header">
           <div>
             <h2>Events</h2>
@@ -26,24 +55,14 @@
               translator codes and background image.
             </p>
           </div>
-          <button id="open-new-event" class="primary"><span>＋ New event</span></button>
         </div>
 
-        <div class="event-table" id="event-table">
-          <div class="event-table-head">
-            <div>Name</div>
-            <div>Languages</div>
-            <div class="num">Codes</div>
-            <div>Background</div>
-            <div></div>
-          </div>
-          <div id="event-table-body"></div>
-        </div>
+        <div id="event-grid" class="event-grid"></div>
       </section>
 
       <section class="admin-block">
         <h2>Default background</h2>
-        <p class="hint">Used as the fallback for events that don't set their own background, and on login pages.</p>
+        <p class="hint">Shown at the top of every page when an event has no image of its own.</p>
         <div class="default-bg-row">
           <div class="bg-preview" id="bg-preview"></div>
           <form id="bg-form" class="row-stack">
@@ -54,34 +73,35 @@
             </label>
             <div class="row">
               <button type="submit" class="primary"><span>Upload</span></button>
-              <button type="button" id="bg-reset"><span>Reset to bundled</span></button>
+              <button type="button" id="bg-reset" class="secondary"><span>Reset to bundled</span></button>
             </div>
           </form>
         </div>
       </section>
-
-      <div id="status" class="status"></div>
     </main>
 
     <!-- New event modal -->
     <div id="modal-backdrop" class="modal-backdrop" hidden>
       <div class="modal" role="dialog" aria-labelledby="modal-title" aria-modal="true">
         <header class="modal-header">
-          <h2 id="modal-title">New event</h2>
+          <div class="modal-header-text">
+            <h2 id="modal-title">New event</h2>
+            <p class="hint">Give it a name and pick the languages translators will broadcast.</p>
+          </div>
           <button type="button" id="modal-close" class="modal-close" aria-label="Close">×</button>
         </header>
-        <form id="event-form" class="row-stack">
+        <form id="event-form">
           <label>
             Name
             <input id="event-name" type="text" placeholder="e.g. Sunday Service" required />
           </label>
-          <fieldset class="lang-pick">
-            <legend>Languages</legend>
+          <fieldset style="border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2);">
+            <legend style="font-size: var(--text-sm); font-weight: 600; padding: 0;">Languages</legend>
             <div id="event-languages" class="lang-grid"></div>
           </fieldset>
           <div class="row modal-actions">
             <button type="button" id="modal-cancel" class="ghost"><span>Cancel</span></button>
-            <button type="submit" class="primary"><span>Create event</span></button>
+            <button type="submit" id="modal-submit" class="primary"><span>Create event</span></button>
           </div>
         </form>
       </div>
@@ -89,24 +109,35 @@
 
     <!-- Edit event modal -->
     <div id="event-modal-backdrop" class="modal-backdrop" hidden>
-      <div class="modal modal-wide" role="dialog" aria-labelledby="detail-name" aria-modal="true">
+      <div class="modal wide" role="dialog" aria-labelledby="detail-name" aria-modal="true">
         <header class="modal-header">
           <div class="modal-header-text">
-            <div class="modal-title-row">
-              <h2 id="detail-name"></h2>
-              <button type="button" id="detail-rename" class="ghost small"><span>Rename</span></button>
-            </div>
+            <h2 id="detail-name"></h2>
             <p class="hint" id="detail-meta"></p>
           </div>
           <button type="button" id="event-modal-close" class="modal-close" aria-label="Close">×</button>
         </header>
 
         <div class="detail-grid">
+          <!-- Codes are the most common task, so they're first. -->
+          <div class="admin-subblock">
+            <h3>Translator codes</h3>
+            <p class="hint">One code per translator. Each code unlocks one language channel for this event.</p>
+            <div id="code-list" class="code-list"></div>
+            <form id="code-form" class="code-form-row">
+              <select id="code-language" aria-label="Language"></select>
+              <input id="code-name" type="text" placeholder="Translator name" />
+              <button type="submit" id="code-submit" class="primary"><span>Generate code</span></button>
+            </form>
+          </div>
+
           <div class="admin-subblock">
             <h3>Languages</h3>
             <p class="hint">Pick which languages translators can broadcast on for this event.</p>
             <div id="detail-languages" class="lang-grid"></div>
-            <button type="button" class="primary small self-start" id="detail-save-langs"><span>Save languages</span></button>
+            <button type="button" class="primary small self-start" id="detail-save-langs">
+              <span>Save languages</span>
+            </button>
           </div>
 
           <div class="admin-subblock">
@@ -121,33 +152,33 @@
               </label>
               <div class="row">
                 <button type="submit" class="primary"><span>Upload</span></button>
-                <button type="button" id="detail-bg-reset"><span>Use default</span></button>
+                <button type="button" id="detail-bg-reset" class="secondary"><span>Use default</span></button>
               </div>
             </form>
           </div>
 
-          <div class="admin-subblock subblock-wide">
-            <h3>Translator codes</h3>
-            <p class="hint">One code per translator. Each code unlocks one language channel for this event.</p>
-            <div id="code-list" class="code-list"></div>
-            <form id="code-form" class="code-form-row">
-              <select id="code-language" aria-label="Language"></select>
-              <input id="code-name" type="text" placeholder="Translator name" />
-              <button type="submit" class="primary"><span>Generate code</span></button>
-            </form>
+          <div class="status-zone">
+            <div class="status-zone-text">
+              <strong id="detail-status-label">Event is active</strong>
+              <p class="hint">Inactive events are hidden from the listener's event selection.</p>
+            </div>
+            <button type="button" id="detail-toggle-active" class="small"><span>Deactivate</span></button>
+          </div>
+
+          <div class="danger-zone">
+            <div class="danger-zone-text">
+              <strong>Delete this event</strong>
+              <p class="hint">Removes the event and revokes every code attached to it. Cannot be undone.</p>
+            </div>
+            <button type="button" id="detail-delete" class="danger"><span>Delete event</span></button>
           </div>
         </div>
-
-        <footer class="modal-footer">
-          <span class="grow"></span>
-          <button type="button" id="detail-delete" class="danger"><span>Delete event</span></button>
-        </footer>
       </div>
     </div>
 
     <!-- Languages modal -->
     <div id="lang-modal-backdrop" class="modal-backdrop" hidden>
-      <div class="modal modal-wide" role="dialog" aria-labelledby="lang-modal-title" aria-modal="true">
+      <div class="modal wide" role="dialog" aria-labelledby="lang-modal-title" aria-modal="true">
         <header class="modal-header">
           <div class="modal-header-text">
             <h2 id="lang-modal-title">Languages</h2>
@@ -156,14 +187,16 @@
           <button type="button" id="lang-modal-close" class="modal-close" aria-label="Close">×</button>
         </header>
 
-        <div id="lang-list" class="lang-list"></div>
+        <div class="modal-body">
+          <form id="add-lang-form" class="lang-add-row" style="margin-top: 0; padding-top: 0; border-top: 0;">
+            <input id="add-lang-code" type="text" placeholder="Code (de)" maxlength="8" autocomplete="off" required />
+            <input id="add-lang-flag" type="text" placeholder="🇩🇪" maxlength="6" autocomplete="off" />
+            <input id="add-lang-name" type="text" placeholder="Display name (Deutsch)" required />
+            <button type="submit" class="primary"><span>Add language</span></button>
+          </form>
 
-        <form id="add-lang-form" class="lang-add-row">
-          <input id="add-lang-code" type="text" placeholder="Code (e.g. de)" maxlength="8" autocomplete="off" required />
-          <input id="add-lang-flag" type="text" placeholder="🇩🇪 (auto)" maxlength="6" autocomplete="off" />
-          <input id="add-lang-name" type="text" placeholder="Display name (e.g. Deutsch)" required />
-          <button type="submit" class="primary"><span>Add language</span></button>
-        </form>
+          <div id="lang-list" class="lang-list"></div>
+        </div>
       </div>
     </div>
 

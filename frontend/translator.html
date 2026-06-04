@@ -3,36 +3,58 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#06101c" />
-    <title>LocalLingua · Translator</title>
+    <meta name="theme-color" content="#ffffff" />
+    <title>Every Ear · Translator</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <div id="broadcast-tint" aria-hidden="true"></div>
     <main>
-      <h1>Translator Console</h1>
+      <div id="event-banner" class="event-banner" hidden></div>
 
-      <div id="event-name" class="event-banner" hidden></div>
-
-      <section id="setup-section">
-        <div id="who-setup" class="who"></div>
-        <label>
-          Microphone
-          <div class="mic-row">
-            <select id="mic"></select>
-            <button type="button" id="mic-refresh" class="ghost mic-refresh" aria-label="Refresh microphone list" title="Refresh microphone list">↻</button>
-          </div>
-        </label>
-        <div class="level"><div id="level" class="level-bar"></div></div>
-        <div class="row">
-          <button id="connect" class="primary"><span>Broadcast</span></button>
-          <button id="mute"><span>Mute</span></button>
+      <div id="on-air" class="on-air" hidden>
+        <div class="on-air-dot"></div>
+        <div class="on-air-text">
+          <strong id="on-air-headline">On air</strong>
+          <span class="on-air-sub" id="on-air-sub">You are live.</span>
         </div>
-      </section>
+      </div>
 
-      <section id="live-section" hidden>
-          <button id="sign-out" class="danger"><span>Sign out</span></button>
-      </section>
+      <div class="heading-group">
+        <h1 id="greeting">Hello</h1>
+        <p class="hint" id="translator-detail">Translating into …</p>
+      </div>
+
+      <label>
+        Microphone
+        <div class="mic-row">
+          <select id="mic"></select>
+          <button type="button" id="mic-refresh" class="secondary mic-refresh" aria-label="Refresh microphone list" title="Refresh microphone list">↻</button>
+        </div>
+      </label>
+
+      <div>
+        <div class="level tall"><div id="level" class="level-bar"></div></div>
+        <p class="hint center" id="mic-hint" style="margin-top: 8px">
+          Speak normally — the bar should reach the middle of the row.
+        </p>
+      </div>
+
+      <label class="toggle" id="mute-toggle" hidden>
+        <span id="mute-label">Live — broadcasting</span>
+        <input type="checkbox" id="mute" class="toggle-input" />
+        <span class="toggle-switch"></span>
+      </label>
+
+      <button id="connect" class="primary large block">
+        <span>Start broadcast</span>
+      </button>
+      <button id="stop-broadcast" class="danger outline large block" hidden>
+        <span>Stop broadcast</span>
+      </button>
+
+      <button id="sign-out" class="ghost block">
+        <span>Sign out</span>
+      </button>
 
       <div id="status" class="status"></div>
     </main>

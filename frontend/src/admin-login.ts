@@ -1,4 +1,5 @@
 import { loadAdminToken, saveAdminToken, clearAdminToken } from "./session.js";
+import { setButtonLoading } from "./ui.js";
 
 async function pingAuth(token: string): Promise<boolean> {
   const res = await fetch("/api/admin/login", {
@@ -19,10 +20,11 @@ async function pingAuth(token: string): Promise<boolean> {
 
 const $password = document.getElementById("admin-password") as HTMLInputElement;
 const $loginBtn = document.getElementById("admin-login") as HTMLButtonElement;
-const $status = document.getElementById("status") as HTMLDivElement | null;
+const $status = document.getElementById("status") as HTMLDivElement;
+const $toggle = document.getElementById("password-toggle") as HTMLButtonElement;
+const $toggleIcon = document.getElementById("password-toggle-icon") as HTMLSpanElement;
 
 function setStatus(text: string, isError = false) {
-  if (!$status) return;
   $status.textContent = text;
   $status.classList.toggle("error", isError);
 }
@@ -33,7 +35,7 @@ async function attemptLogin() {
     setStatus("Password required.", true);
     return;
   }
-  $loginBtn.disabled = true;
+  setButtonLoading($loginBtn, true);
   setStatus("Signing in…");
   try {
     if (!(await pingAuth(pw))) {
@@ -43,12 +45,12 @@ async function attemptLogin() {
     }
     saveAdminToken(pw);
     $password.value = "";
-    setStatus("Signed in.");
+    setStatus("");
     location.replace("/admin.html");
   } catch (err) {
     setStatus(err instanceof Error ? err.message : "Login failed", true);
   } finally {
-    $loginBtn.disabled = false;
+    setButtonLoading($loginBtn, false);
   }
 }
 
@@ -58,6 +60,14 @@ $password.addEventListener("keydown", (e) => {
     e.preventDefault();
     void attemptLogin();
   }
+});
+
+$toggle.addEventListener("click", () => {
+  const showing = $password.type === "text";
+  $password.type = showing ? "password" : "text";
+  $toggleIcon.textContent = showing ? "👁" : "🙈";
+  $toggle.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+  $password.focus();
 });
 
 $password.focus();

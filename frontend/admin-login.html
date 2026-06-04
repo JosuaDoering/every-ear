@@ -3,18 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#06101c" />
-    <title>LocalLingua · Administration Sign-In</title>
+    <meta name="theme-color" content="#ffffff" />
+    <title>Every Ear · Administration Sign-In</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <main>
-      <h1>Administration</h1>
+      <div class="heading-group">
+        <h1>Administration</h1>
+        <p class="hint">Sign in with your admin password.</p>
+      </div>
+
       <label>
         Password
-        <input id="admin-password" type="password" autocomplete="current-password" />
+        <div class="password-field">
+          <input id="admin-password" type="password" autocomplete="current-password" />
+          <button type="button" class="password-toggle" id="password-toggle" aria-label="Show password">
+            <span id="password-toggle-icon">👁</span>
+          </button>
+        </div>
       </label>
-      <button id="admin-login" class="primary"><span>Sign in</span></button>
+
+      <button id="admin-login" class="primary large block">
+        <span>Sign in</span>
+      </button>
+
       <div id="status" class="status"></div>
     </main>
     <script type="module" src="/src/admin-login.ts"></script>

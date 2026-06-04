@@ -13,6 +13,7 @@ export type Event = {
   languages: string[];
   backgroundExt?: string;
   createdAt: string;
+  active?: boolean;
 };
 
 const eventsFile = () => path.join(config.dataDir, "events.json");
@@ -80,7 +81,7 @@ export async function createEvent(
 
 export async function updateEvent(
   id: string,
-  patch: { name?: string; languages?: string[]; backgroundExt?: string | null },
+  patch: { name?: string; languages?: string[]; backgroundExt?: string | null; active?: boolean },
 ): Promise<Event | null> {
   const map = await load();
   const entry = map.get(id);
@@ -94,8 +95,14 @@ export async function updateEvent(
     if (patch.backgroundExt === null) delete entry.backgroundExt;
     else entry.backgroundExt = patch.backgroundExt;
   }
+  if (patch.active !== undefined) entry.active = patch.active;
   await persist(map);
   return entry;
+}
+
+export async function listActiveEvents(): Promise<Event[]> {
+  const all = await listEvents();
+  return all.filter((e) => e.active !== false);
 }
 
 export async function deleteEvent(id: string): Promise<boolean> {

@@ -1,11 +1,13 @@
 {
-  "name": "locallingua-backend",
+  "name": "every-ear-backend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/patch-livekit-types.mjs",
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts"
+    "build": "tsc",
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.3",
@@ -13,8 +15,8 @@
     "livekit-server-sdk": "^2.15.2"
   },
   "devDependencies": {
+    "@types/node": "^22.10.5",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3",
-    "@types/node": "^22.10.5"
+    "typescript": "5.8.2"
   }
 }

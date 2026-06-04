@@ -11,10 +11,11 @@
   },
   {
     "id": "1418190b6c42",
-    "name": "Jesus-Haus Sonntag",
+    "name": "Jesus-Haus Sunday Service",
     "languages": [
       "ru"
     ],
-    "createdAt": "2026-05-04T21:47:18.006Z"
+    "createdAt": "2026-05-04T21:47:18.006Z",
+    "backgroundExt": "png"
   }
 ]

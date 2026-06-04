@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run once on a fresh MacBook to install everything LocalLingua needs.
+# Run once on a fresh MacBook to install everything Every Ear needs.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

@@ -22,7 +22,7 @@ if (Test-Path $binDir) {
 $signature = @"
 using System;
 using System.Runtime.InteropServices;
-public class LocalLinguaPower {
+public class EveryEarPower {
   [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
   public static extern uint SetThreadExecutionState(uint esFlags);
 }
@@ -32,7 +32,7 @@ try {
   $ES_CONTINUOUS       = [uint32]"0x80000000"
   $ES_SYSTEM_REQUIRED  = [uint32]"0x00000001"
   $ES_DISPLAY_REQUIRED = [uint32]"0x00000002"
-  [LocalLinguaPower]::SetThreadExecutionState(
+  [EveryEarPower]::SetThreadExecutionState(
     $ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED -bor $ES_DISPLAY_REQUIRED
   ) | Out-Null
 } catch {

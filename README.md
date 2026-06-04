@@ -1,4 +1,4 @@
-# LocalLingua
+# Every Ear
 
 Self-hosted live translation for large events. Translators stream audio from the browser, listeners open a website and press ▶︎ — no registration, no app. Target latency in LAN: < 300 ms.
 
@@ -62,12 +62,6 @@ The installer triggers a single UAC prompt to register the URL ACL for `https://
 
 Open `https://<lan-ip>/admin.html`, click **Languages** in the header, then add/remove/edit. The list is persisted in `backend/data/languages.json`. The first time the backend boots, it seeds the list from `LANGUAGES`/`LANGUAGE_NAMES`/`LANGUAGE_FLAGS` in `.env` — those env vars are only used as the initial seed.
 
-## Changing the Background Image
-
-Two layers:
-- **Per-event background**: Admin → click an event → "Background image". Shown to listeners and translators connected to that event.
-- **Default background**: Admin → "Default background" block at the bottom. Used as the fallback for events without their own image and on login pages.
-
 ## Testing Latency
 
 In a second terminal:
@@ -99,6 +93,46 @@ Target on M-series / modern Windows: < 30% CPU, smooth audio with 200+ subscribe
 - **"Address already in use" on macOS** → `lsof -nP -iTCP:443 -sTCP:LISTEN`
 - **Windows: Caddy says "permission denied" on :443** → Re-run `install-windows.cmd` once; it adds the URL ACL reservation. Or run start.cmd from an elevated terminal.
 - **PowerShell blocks the script** → use `.\scripts\start.cmd` (the cmd wrapper bypasses the execution policy). Direct `.ps1` invocation requires `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+## Desktop App (.app / .exe)
+
+Every Ear can also be packaged as a tray-only desktop app for macOS and Windows 11. The app bundles `livekit-server`, the Node backend, the prebuilt frontend and Caddy, opens a settings window on first launch, and otherwise lives in the menu bar / system tray. Listeners still connect via browser at `https://<auto-detected-ip>/`.
+
+**Install desktop dependencies (once):**
+
+```bash
+npm run install:all          # also installs desktop/
+```
+
+**Build a packaged app for the current OS:**
+
+```bash
+npm run desktop:dist:mac     # → desktop/dist/Every Ear-0.1.0-arm64.dmg + -x64.dmg
+npm run desktop:dist:win     # → desktop/dist/Every Ear-Setup-0.1.0.exe
+```
+
+The `dist:*` scripts download pinned LiveKit + Caddy binaries on demand into `desktop/resources/bin/<os>/<arch>/` and bundle them as Electron extra-resources.
+
+**Dev iteration on the desktop wrapper:**
+
+```bash
+npm run desktop:dev          # builds + launches Electron against the live source
+```
+
+Dev mode falls back to PATH-resolved `livekit-server` / `caddy` (so a brew/winget install still works without the fetch-binaries step).
+
+**First launch:** a one-time modal shows the auto-generated admin password. Copy it. The app then settles in the tray; click the icon to reach the settings window.
+
+**Settings window** has three sections:
+- *Connection* — listener URL, copy button, scannable QR, and a network-interface picker if more than one private interface is up.
+- *Admin password* — change + Save (the backend restarts automatically; takes ~2s).
+- *Advanced* — regenerate LiveKit credentials, reset all data, reveal the log folder.
+
+**Where the data lives:**
+- macOS: `~/Library/Application Support/every-ear/{config.json,data/,logs/}`
+- Windows: `%APPDATA%\every-ear\{config.json,data\,logs\}`
+
+**Unsigned-build caveats:** the current builds are not code-signed. macOS Gatekeeper will refuse the first launch — right-click the app → Open. Windows SmartScreen will warn — More info → Run anyway. Both can be removed later by adding signing identities to `desktop/electron-builder.yml`.
 
 ## Development Mode
 

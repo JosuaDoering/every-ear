@@ -3,7 +3,7 @@ import multipart from "@fastify/multipart";
 import { config } from "./config.js";
 import { listenerToken, translatorToken } from "./tokens.js";
 import { getCode, listCodes, markUsed } from "./codes.js";
-import { getEvent, listEvents } from "./events.js";
+import { getEvent, listActiveEvents, listEvents } from "./events.js";
 import {
   getLanguage,
   listLanguages,
@@ -24,17 +24,24 @@ async function start() {
   }));
 
   app.get("/api/events", async () => {
-    const [events, langs] = await Promise.all([listEvents(), listLanguages()]);
+    const [events, langs, allCodes] = await Promise.all([
+      listActiveEvents(),
+      listLanguages(),
+      listCodes(),
+    ]);
     const byCode = new Map(langs.map((l) => [l.code, l]));
+    const eventIdsWithCodes = new Set(allCodes.map((c) => c.eventId));
     return {
-      events: events.map((e) => ({
-        id: e.id,
-        name: e.name,
-        languages: e.languages
-          .map((c) => byCode.get(c))
-          .filter((l): l is (typeof langs)[number] => Boolean(l)),
-        hasBackground: Boolean(e.backgroundExt),
-      })),
+      events: events
+        .filter((e) => eventIdsWithCodes.has(e.id))
+        .map((e) => ({
+          id: e.id,
+          name: e.name,
+          languages: e.languages
+            .map((c) => byCode.get(c))
+            .filter((l): l is (typeof langs)[number] => Boolean(l)),
+          hasBackground: Boolean(e.backgroundExt),
+        })),
     };
   });
 

@@ -5,3 +5,8 @@ dist
 .overmind.sock
 *.log
 .bin
+desktop/build
+desktop/dist
+desktop/resources/bin
+backend/dist
+backend/data

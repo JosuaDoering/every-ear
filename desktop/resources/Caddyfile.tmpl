@@ -1,0 +1,28 @@
+# Caddyfile used by the packaged desktop app. Same TLS termination as the
+# repo Caddyfile, but the catch-all serves the prebuilt frontend bytes from
+# {$FRONTEND_DIST} (set by the supervisor) instead of proxying to Vite.
+#
+# Listens on a non-privileged port (8443 by default) so the desktop app
+# can bind it as a normal user — no sudo, no UAC, no port-ACL setup.
+# Listeners reach it at https://<lan-ip>:8443/.
+
+{$PUBLIC_HOST}:{$LISTENER_PORT}, localhost:{$LISTENER_PORT} {
+	tls internal
+
+	# LiveKit signaling (WebSocket).
+	handle_path /livekit/* {
+		reverse_proxy localhost:7880
+	}
+
+	# Token + config endpoints.
+	handle /api/* {
+		reverse_proxy localhost:{$BACKEND_PORT}
+	}
+
+	# Frontend (static SPA bytes shipped inside the bundle).
+	handle {
+		root * {$FRONTEND_DIST}
+		try_files {path} /index.html
+		file_server
+	}
+}

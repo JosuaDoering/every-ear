@@ -1,5 +1,5 @@
 #Requires -Version 5
-# Run once on a fresh Windows 11 machine to install everything LocalLingua needs.
+# Run once on a fresh Windows 11 machine to install everything Every Ear needs.
 # Equivalent of scripts/install-mac.sh.
 
 $ErrorActionPreference = "Stop"
@@ -40,11 +40,13 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 # ---- LiveKit server (download manually — not on winget) -------------------
 
-$lkVersion  = "v1.7.2"
-$lkZipName  = "livekit_${lkVersion}_windows_amd64.zip"
-$lkUrl      = "https://github.com/livekit/livekit/releases/download/$lkVersion/$lkZipName"
-$binDir     = Join-Path $PWD ".bin"
-$lkExe      = Join-Path $binDir "livekit-server.exe"
+# Tag includes the "v"; the release asset filename does not.
+$lkVersion    = "v1.11.0"
+$lkVersionNoV = $lkVersion.TrimStart('v')
+$lkZipName    = "livekit_${lkVersionNoV}_windows_amd64.zip"
+$lkUrl        = "https://github.com/livekit/livekit/releases/download/$lkVersion/$lkZipName"
+$binDir       = Join-Path $PWD ".bin"
+$lkExe        = Join-Path $binDir "livekit-server.exe"
 
 if (-not (Test-Path $lkExe)) {
   Write-Host "→ Downloading LiveKit server $lkVersion…" -ForegroundColor Cyan
@@ -95,21 +97,21 @@ $me = "$env:USERDOMAIN\$env:USERNAME"
 Write-Host "Reserving https://+:443/ for $me…" -ForegroundColor Cyan
 netsh http add urlacl url=https://+:443/ user="$me" | Out-Host
 
-Write-Host "Adding firewall rule: LocalLingua HTTPS (TCP/443)…" -ForegroundColor Cyan
-netsh advfirewall firewall add rule name="LocalLingua HTTPS" dir=in action=allow protocol=TCP localport=443 | Out-Host
+Write-Host "Adding firewall rule: Every Ear HTTPS (TCP/443)…" -ForegroundColor Cyan
+netsh advfirewall firewall add rule name="Every Ear HTTPS" dir=in action=allow protocol=TCP localport=443 | Out-Host
 
-Write-Host "Adding firewall rule: LocalLingua LiveKit TCP/7881…" -ForegroundColor Cyan
-netsh advfirewall firewall add rule name="LocalLingua LiveKit TCP" dir=in action=allow protocol=TCP localport=7881 | Out-Host
+Write-Host "Adding firewall rule: Every Ear LiveKit TCP/7881…" -ForegroundColor Cyan
+netsh advfirewall firewall add rule name="Every Ear LiveKit TCP" dir=in action=allow protocol=TCP localport=7881 | Out-Host
 
-Write-Host "Adding firewall rule: LocalLingua LiveKit UDP/7882…" -ForegroundColor Cyan
-netsh advfirewall firewall add rule name="LocalLingua LiveKit UDP" dir=in action=allow protocol=UDP localport=7882 | Out-Host
+Write-Host "Adding firewall rule: Every Ear LiveKit UDP/7882…" -ForegroundColor Cyan
+netsh advfirewall firewall add rule name="Every Ear LiveKit UDP" dir=in action=allow protocol=UDP localport=7882 | Out-Host
 
 Write-Host ""
 Write-Host "Elevated setup done. You can close this window." -ForegroundColor Green
 Start-Sleep -Seconds 2
 '@
 
-$tmpScript = Join-Path $env:TEMP "locallingua-elevated.ps1"
+$tmpScript = Join-Path $env:TEMP "every-ear-elevated.ps1"
 Set-Content -Path $tmpScript -Value $elevatedScript -Encoding UTF8
 
 Write-Host "→ Granting Caddy permission to bind :443 and opening firewall ports (UAC prompt)…" -ForegroundColor Cyan

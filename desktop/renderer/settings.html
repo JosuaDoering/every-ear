@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
+    <title>Every Ear · Settings</title>
+    <link rel="stylesheet" href="./settings.css" />
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <h1>Every Ear</h1>
+        <span id="status-pill" class="status-pill">Starting…</span>
+      </header>
+
+      <div id="firewall-banner" class="firewall-banner" hidden>
+        <div class="firewall-banner-icon">⚠</div>
+        <div class="firewall-banner-body">
+          <div class="firewall-banner-title">
+            <strong>Firewall is blocking livekit-server</strong>
+            <button id="firewall-info" class="info-btn" type="button" aria-label="Why am I seeing this?" title="Why am I seeing this?">i</button>
+          </div>
+          <p id="firewall-banner-msg" class="hint"></p>
+          <code id="firewall-banner-path" class="firewall-binary"></code>
+          <div class="row">
+            <button id="firewall-open" class="primary small" type="button">Open Firewall settings</button>
+            <button id="firewall-recheck" class="ghost small" type="button">Re-check</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Connection -->
+      <section class="card" id="connection-card">
+        <h2>Connection</h2>
+        <p class="hint">
+          Listeners and translators connect through this URL while on the same network.
+        </p>
+
+        <div id="url-row" class="url-row">
+          <code id="listener-url" class="url">—</code>
+          <button id="copy-url" class="ghost small" type="button">Copy</button>
+          <button id="open-admin" class="ghost small" type="button">Open admin</button>
+        </div>
+
+        <p id="no-lan" class="hint" hidden>
+          No usable network interface detected — listeners can't connect until the
+          machine is back on a LAN. Use “Rescan” after reconnecting.
+        </p>
+
+        <div id="iface-row" class="iface-row" hidden>
+          <label>
+            Network interface
+            <select id="iface-select"></select>
+          </label>
+          <button id="refresh-lan" class="ghost small" type="button">Rescan</button>
+          <p class="hint">
+            Pick the interface listeners share with you. Auto selects the OS default route.
+          </p>
+        </div>
+      </section>
+
+      <!-- Admin password -->
+      <section class="card">
+        <h2>Admin Password</h2>
+        <p class="hint">
+          Enter this on <code>/admin.html</code> to manage events, languages, and translator codes.
+        </p>
+        <div class="password-row">
+          <input id="admin-password" type="password" autocomplete="off" />
+          <button id="toggle-password" class="ghost small" type="button" aria-label="Show password">👁</button>
+          <button id="copy-password" class="ghost small" type="button">Copy</button>
+        </div>
+        <div class="row">
+          <button id="save-password" class="primary" type="button">Save password</button>
+          <span id="save-status" class="muted"></span>
+        </div>
+      </section>
+
+      <!-- HTTPS & Domain -->
+      <section class="card" id="https-card">
+        <h2>HTTPS &amp; Domain</h2>
+        <p class="hint">
+          By default Every Ear uses a self-signed certificate — listeners accept it once per device.
+          Optionally point a real domain here and supply a certificate.
+        </p>
+
+        <div class="field-group">
+          <label class="field-label" for="custom-domain">
+            Domain <span class="optional">optional</span>
+          </label>
+          <input
+            id="custom-domain"
+            type="text"
+            placeholder="events.example.com"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <p class="hint">Caddy listens on this hostname. DNS must point to this machine.</p>
+        </div>
+
+        <!-- Tab bar -->
+        <div class="tab-bar">
+          <button id="cert-tab" class="tab active" type="button">Own Certificate</button>
+          <button id="acme-tab" class="tab" type="button">Let's Encrypt</button>
+        </div>
+
+        <!-- Own Certificate panel -->
+        <div id="tab-manual" class="tab-panel">
+          <div class="field-group">
+            <label class="field-label">
+              Certificate file <span class="optional">optional</span>
+            </label>
+            <div class="file-pick-row">
+              <input id="cert-file" type="text" readonly placeholder="No file chosen" />
+              <button id="pick-cert" class="ghost small" type="button">Browse…</button>
+            </div>
+            <p class="hint">PEM-encoded certificate (cert.pem). Leave empty to use the internal CA.</p>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">
+              Private key <span class="optional">optional</span>
+            </label>
+            <div class="file-pick-row">
+              <input id="key-file" type="text" readonly placeholder="No file chosen" />
+              <button id="pick-key" class="ghost small" type="button">Browse…</button>
+            </div>
+            <p class="hint">PEM-encoded private key (key.pem). Required when a certificate is set.</p>
+          </div>
+
+          <div class="row">
+            <button id="save-https" class="primary" type="button">Save &amp; restart</button>
+            <span id="https-status" class="muted"></span>
+          </div>
+        </div>
+
+        <!-- Let's Encrypt panel -->
+        <div id="tab-acme" class="tab-panel" hidden>
+          <p class="hint">
+            Let's Encrypt issues a free, trusted certificate — no browser warning for listeners.
+            The app uses the Netcup DNS API to set and remove the required TXT record automatically.
+            Credentials are saved after the first successful run.
+          </p>
+
+          <div class="field-group">
+            <label class="field-label" for="netcup-customer-id">Netcup Customer ID</label>
+            <input id="netcup-customer-id" type="text" placeholder="123456" autocomplete="off" spellcheck="false" />
+            <p class="hint">Found in Netcup CCP under <em>Master data → Customer number</em>.</p>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="netcup-api-key">API Key</label>
+            <input id="netcup-api-key" type="text" placeholder="apikey1234…" autocomplete="off" spellcheck="false" />
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="netcup-api-password">API Password</label>
+            <input id="netcup-api-password" type="password" autocomplete="off" />
+            <p class="hint">Create an API key in Netcup CCP under <em>Master data → API</em>.</p>
+          </div>
+
+          <div class="row">
+            <button id="obtain-cert" class="primary" type="button">Get certificate</button>
+            <span id="acme-status" class="muted"></span>
+          </div>
+
+          <div class="field-group dns-update">
+            <p class="hint">
+              Already have a certificate but your IP changed? Point your domain at this
+              machine's current IP by updating only the Netcup A-record — no new
+              certificate is requested.
+            </p>
+            <div class="row">
+              <button id="update-dns" class="ghost small" type="button">Update IP (A-record only)</button>
+              <span id="dns-status" class="muted"></span>
+            </div>
+          </div>
+        </div>
+
+        <button id="clear-https" class="ghost" type="button">↩ Reset to internal CA</button>
+      </section>
+
+      <!-- Advanced -->
+      <section class="card">
+        <h2>Advanced</h2>
+
+        <div class="info-row">
+          <button id="reveal-logs" class="ghost small" type="button">Reveal log folder</button>
+          <span id="version-hint" class="version-text"></span>
+        </div>
+        <p id="log-path-hint" class="hint"></p>
+
+        <hr class="divider" />
+
+        <div class="field-group">
+          <div class="row">
+            <button id="regen-creds" type="button">Regenerate LiveKit credentials</button>
+          </div>
+          <p class="hint">Re-rolls the API key + secret. Active translators reconnect automatically.</p>
+        </div>
+
+        <div class="danger-zone">
+          <div class="danger-zone-text">
+            <strong>Reset all data</strong>
+            <p class="hint">Wipes events, codes, languages, backgrounds, and credentials. Cannot be undone.</p>
+          </div>
+          <button id="reset-data" class="danger small" type="button">Reset</button>
+        </div>
+      </section>
+    </main>
+
+    <div id="firewall-info-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-scroll" role="dialog" aria-modal="true" aria-labelledby="firewall-info-title">
+        <header class="modal-head">
+          <h2 id="firewall-info-title">Why is this warning showing?</h2>
+          <button id="firewall-info-close" class="modal-x" type="button" aria-label="Close">×</button>
+        </header>
+
+        <div class="firewall-info-content">
+          <section>
+            <h3>What Every Ear just checked</h3>
+            <p>
+              On macOS, Every Ear asks the built-in Application Firewall whether the
+              <code>livekit-server</code> binary is allowed to accept incoming
+              connections. It runs these two checks:
+            </p>
+            <pre><code>socketfilterfw --getglobalstate
+socketfilterfw --getappblocked &lt;binary&gt;</code></pre>
+            <p>
+              Right now the firewall is <strong>turned on</strong>, and for this exact
+              binary it reported <em>“blocking incoming connections”</em>. That is the
+              only reason the warning is here:
+            </p>
+            <code id="firewall-info-path" class="firewall-binary"></code>
+          </section>
+
+          <section>
+            <h3>What this binary does</h3>
+            <p>
+              <code>livekit-server</code> is the small media server Every Ear runs on
+              this Mac so phones on your network can send and receive the live audio.
+              The Application Firewall decides, per app, whether other devices may open
+              <em>incoming</em> connections to it. When it blocks this binary, those
+              incoming media connections can be dropped.
+            </p>
+          </section>
+
+          <section>
+            <h3>Why it appears even though audio works right now</h3>
+            <p>
+              The listener and translator phones <em>initiate</em> the connection
+              outward to the server. That outbound handshake usually succeeds even while
+              the app is on the block list, so audio can seem perfectly fine at the
+              moment.
+            </p>
+            <p>
+              The risk shows up later: when a phone joins from a different subnet, or the
+              network path changes (a Wi-Fi switch, new ICE candidates, a router that
+              needs the server to accept the return path), the blocked incoming rule can
+              suddenly cut the audio. The warning is here so you can fix it before that
+              happens during a live event — not because anything is broken this second.
+            </p>
+          </section>
+
+          <section>
+            <h3>How to clear it</h3>
+            <ol>
+              <li>Click <strong>Open Firewall settings</strong> below.</li>
+              <li>Open <em>Firewall Options…</em>.</li>
+              <li>Find <code>livekit-server</code> in the list.</li>
+              <li>Switch it to <strong>Allow incoming connections</strong>.</li>
+              <li>Back in Every Ear, click <strong>Re-check</strong> on the warning.</li>
+            </ol>
+            <p class="hint">
+              Turning the firewall off entirely also clears the warning, but allowing
+              just this one binary is the safer choice.
+            </p>
+          </section>
+        </div>
+
+        <div class="row modal-foot">
+          <button id="firewall-info-open" class="primary" type="button">Open Firewall settings</button>
+          <button id="firewall-info-dismiss" class="ghost" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="first-run-modal" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="first-run-title">
+        <h2 id="first-run-title">Welcome to Every Ear</h2>
+        <p class="hint">Your initial admin password is:</p>
+        <code id="first-run-password" class="big-code">—</code>
+        <p class="hint">
+          Copy it now and store it somewhere safe. You can change it any time on this screen.
+        </p>
+        <div class="row">
+          <button id="first-run-copy" class="primary" type="button">Copy and continue</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./settings.js"></script>
+  </body>
+</html>

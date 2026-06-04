@@ -8,25 +8,30 @@ import {
 } from "livekit-client";
 import { livekitUrl } from "./livekit.js";
 import { loadTranslatorGrant, clearTranslatorGrant } from "./session.js";
+import { setButtonLoading } from "./ui.js";
 
 const grant = loadTranslatorGrant();
 if (!grant) {
   location.replace("/translator-login.html");
-  // Stop further execution while the redirect is happening.
   throw new Error("not authenticated");
 }
 
-const $eventName = document.getElementById("event-name") as HTMLDivElement | null;
-const $setupSection = document.getElementById("setup-section") as HTMLElement;
-const $liveSection = document.getElementById("live-section") as HTMLElement;
-const $whoSetup = document.getElementById("who-setup") as HTMLDivElement | null;
+const $eventBanner = document.getElementById("event-banner") as HTMLDivElement;
+const $onAir = document.getElementById("on-air") as HTMLDivElement;
+const $onAirHeadline = document.getElementById("on-air-headline") as HTMLElement;
+const $onAirSub = document.getElementById("on-air-sub") as HTMLElement;
+const $greeting = document.getElementById("greeting") as HTMLHeadingElement;
+const $translatorDetail = document.getElementById("translator-detail") as HTMLParagraphElement;
 const $mic = document.getElementById("mic") as HTMLSelectElement;
-const $micRefresh = document.getElementById("mic-refresh") as HTMLButtonElement | null;
+const $micRefresh = document.getElementById("mic-refresh") as HTMLButtonElement;
+const $micHint = document.getElementById("mic-hint") as HTMLParagraphElement;
 const $connect = document.getElementById("connect") as HTMLButtonElement;
+const $stop = document.getElementById("stop-broadcast") as HTMLButtonElement;
 const $signOut = document.getElementById("sign-out") as HTMLButtonElement;
-const $mute = document.getElementById("mute") as HTMLButtonElement;
-const $muteLabel = $mute.querySelector("span") as HTMLSpanElement;
-const $status = document.getElementById("status") as HTMLDivElement | null;
+const $muteToggle = document.getElementById("mute-toggle") as HTMLLabelElement;
+const $mute = document.getElementById("mute") as HTMLInputElement;
+const $muteLabel = document.getElementById("mute-label") as HTMLSpanElement;
+const $status = document.getElementById("status") as HTMLDivElement;
 const $level = document.getElementById("level") as HTMLDivElement;
 
 let room: Room | null = null;
@@ -35,31 +40,60 @@ let levelTimer: number | null = null;
 let micEnumerationToken = 0;
 
 function setStatus(text: string, isError = false) {
-  if (!$status) return;
   $status.textContent = text;
   $status.classList.toggle("error", isError);
 }
 
-function setBroadcasting(on: boolean) {
-  document.body.classList.toggle("broadcasting", on);
+if (grant.eventName) {
+  $eventBanner.textContent = grant.eventName;
+  $eventBanner.hidden = false;
 }
 
-function syncBroadcasting() {
-  setBroadcasting(Boolean(room && track && !track.isMuted));
+$greeting.textContent = `Hello, ${grant.name}`;
+$translatorDetail.textContent = `Translating into ${grant.flag}  ${grant.languageName}`;
+
+function setOnAir(state: "off" | "live" | "muted" | "reconnecting") {
+  if (state === "off") {
+    $onAir.hidden = true;
+    return;
+  }
+  $onAir.hidden = false;
+  $onAir.classList.toggle("muted", state === "muted");
+  if (state === "live") {
+    $onAirHeadline.textContent = "On air";
+    $onAirSub.textContent = "You are live.";
+  } else if (state === "muted") {
+    $onAirHeadline.textContent = "Muted";
+    $onAirSub.textContent = "Listeners hear silence right now.";
+  } else if (state === "reconnecting") {
+    $onAirHeadline.textContent = "Reconnecting…";
+    $onAirSub.textContent = "Network glitch — hang on.";
+  }
 }
 
-document.documentElement.style.setProperty(
-  "--bg-image",
-  `url("/api/events/${grant.eventId}/background")`,
-);
-
-if ($eventName) {
-  $eventName.textContent = grant.eventName;
-  $eventName.hidden = false;
+function setBroadcastUI(broadcasting: boolean) {
+  $connect.hidden = broadcasting;
+  $stop.hidden = !broadcasting;
+  $muteToggle.hidden = !broadcasting;
+  // While broadcasting, the mic select is disabled — switching device
+  // mid-stream is jarring and rarely what you want.
+  $mic.disabled = broadcasting;
+  $micRefresh.disabled = broadcasting;
+  $micHint.hidden = broadcasting;
 }
 
-const label = `${grant.name} → ${grant.flag}  ${grant.languageName}`;
-if ($whoSetup) $whoSetup.textContent = label;
+function syncMuteState() {
+  if (!track) {
+    $mute.checked = false;
+    $muteLabel.textContent = "Live — broadcasting";
+    return;
+  }
+  const muted = track.isMuted;
+  // Toggle is "on" = broadcasting. So checked when NOT muted.
+  $mute.checked = !muted;
+  $muteLabel.textContent = muted ? "Muted — nobody hears you" : "Live — broadcasting";
+  setOnAir(muted ? "muted" : "live");
+}
 
 // ---- Microphone enumeration ------------------------------------------------
 
@@ -71,12 +105,11 @@ function populateMics(mics: MediaDeviceInfo[]): void {
   const previous = rememberSelectedMic();
   $mic.innerHTML = "";
 
-  // Always offer a "system default" entry so the dropdown is never empty.
   const def = document.createElement("option");
   def.value = "";
   def.textContent =
     mics.length === 0
-      ? "System default microphone (no devices listed)"
+      ? "System default (no other microphones found)"
       : "System default microphone";
   $mic.appendChild(def);
 
@@ -87,7 +120,6 @@ function populateMics(mics: MediaDeviceInfo[]): void {
     $mic.appendChild(opt);
   }
 
-  // Restore the previous selection where possible.
   if (previous && Array.from($mic.options).some((o) => o.value === previous)) {
     $mic.value = previous;
   }
@@ -96,8 +128,6 @@ function populateMics(mics: MediaDeviceInfo[]): void {
 async function ensureMicPermission(): Promise<boolean> {
   try {
     const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
-    // Holding the probe briefly lets the OS populate device labels reliably
-    // — Safari especially returns blanks if the stream is torn down too fast.
     await new Promise((r) => setTimeout(r, 80));
     probe.getTracks().forEach((t) => t.stop());
     return true;
@@ -124,7 +154,7 @@ async function loadMics(opts: { silent?: boolean } = {}): Promise<void> {
   if (myToken !== micEnumerationToken) return;
 
   if (!ok) {
-    setStatus("Microphone access denied or unavailable.", true);
+    setStatus("Microphone access denied. Allow it in your browser settings.", true);
     populateMics([]);
     return;
   }
@@ -136,12 +166,18 @@ async function loadMics(opts: { silent?: boolean } = {}): Promise<void> {
   if (!opts.silent) {
     if (mics.length === 0) {
       setStatus(
-        "No microphones detected — using system default. Try the ↻ refresh button.",
+        "No microphones detected — using system default. Tap ↻ to retry.",
         true,
       );
     } else {
       setStatus("");
     }
+  }
+
+  // Keep the level meter running off the system default so the translator
+  // can verify their mic before going live.
+  if (!room) {
+    void startPreviewLevelMeter();
   }
 }
 
@@ -155,18 +191,56 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-// Re-enumerate whenever the user opens the dropdown — catches devices that
-// were plugged in or unblocked while the page was idle.
 $mic.addEventListener("focus", () => void loadMics({ silent: true }));
 $mic.addEventListener("mousedown", () => void loadMics({ silent: true }));
-$micRefresh?.addEventListener("click", () => void loadMics());
+$mic.addEventListener("change", () => {
+  if (!room) void startPreviewLevelMeter();
+});
+$micRefresh.addEventListener("click", () => void loadMics());
 
 // ---- Level meter -----------------------------------------------------------
 
-function startLevelMeter(t: LocalAudioTrack) {
+let previewStream: MediaStream | null = null;
+let previewCtx: AudioContext | null = null;
+
+function stopLevelMeter() {
+  if (levelTimer != null) {
+    clearInterval(levelTimer);
+    levelTimer = null;
+  }
+  $level.style.width = "0%";
+}
+
+function teardownPreview() {
+  if (previewStream) {
+    previewStream.getTracks().forEach((t) => t.stop());
+    previewStream = null;
+  }
+  if (previewCtx) {
+    void previewCtx.close();
+    previewCtx = null;
+  }
+}
+
+async function startPreviewLevelMeter() {
+  if (room) return; // Live meter will take over.
   stopLevelMeter();
-  const stream = new MediaStream([t.mediaStreamTrack]);
+  teardownPreview();
+  try {
+    const deviceId = $mic.value || undefined;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+    });
+    previewStream = stream;
+    runMeterOnStream(stream);
+  } catch {
+    // Permission denied — meter just stays at zero.
+  }
+}
+
+function runMeterOnStream(stream: MediaStream) {
   const ctx = new AudioContext();
+  previewCtx = ctx;
   const src = ctx.createMediaStreamSource(stream);
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 256;
@@ -180,12 +254,11 @@ function startLevelMeter(t: LocalAudioTrack) {
   }, 80);
 }
 
-function stopLevelMeter() {
-  if (levelTimer != null) {
-    clearInterval(levelTimer);
-    levelTimer = null;
-  }
-  $level.style.width = "0%";
+function startLiveLevelMeter(t: LocalAudioTrack) {
+  stopLevelMeter();
+  teardownPreview();
+  const stream = new MediaStream([t.mediaStreamTrack]);
+  runMeterOnStream(stream);
 }
 
 // ---- Connect / disconnect --------------------------------------------------
@@ -193,7 +266,7 @@ function stopLevelMeter() {
 async function connect() {
   if (!grant) return;
   const deviceId = $mic.value || undefined;
-  $connect.disabled = true;
+  setButtonLoading($connect, true);
   setStatus("Connecting…");
 
   try {
@@ -215,12 +288,12 @@ async function connect() {
 
     room.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
       if (state === ConnectionState.Reconnecting) {
-        setStatus("Connection unstable — reconnecting…", true);
+        setOnAir("reconnecting");
+      } else if (state === ConnectionState.Connected) {
+        syncMuteState();
       }
-      if (state === ConnectionState.Connected) setStatus("Live.");
     });
     room.on(RoomEvent.Disconnected, () => {
-      setStatus("Disconnected.");
       teardownLive();
     });
 
@@ -229,17 +302,16 @@ async function connect() {
       source: Track.Source.Microphone,
     });
 
-    $setupSection.hidden = true;
-    $liveSection.hidden = false;
-    setStatus("Live.");
-    startLevelMeter(track);
-    syncBroadcasting();
+    setBroadcastUI(true);
+    syncMuteState();
+    setStatus("");
+    startLiveLevelMeter(track);
   } catch (err) {
     console.error(err);
-    setStatus(err instanceof Error ? err.message : "Unknown error", true);
+    setStatus(err instanceof Error ? err.message : "Could not start broadcast.", true);
     teardownLive();
   } finally {
-    $connect.disabled = false;
+    setButtonLoading($connect, false);
   }
 }
 
@@ -253,10 +325,12 @@ function teardownLive() {
     void room.disconnect();
     room = null;
   }
-  $liveSection.hidden = true;
-  $setupSection.hidden = false;
-  $muteLabel.textContent = "Mute";
-  setBroadcasting(false);
+  setBroadcastUI(false);
+  setOnAir("off");
+  $mute.checked = false;
+  $muteLabel.textContent = "Live — broadcasting";
+  // Restart preview meter so the translator can see their mic level again.
+  void startPreviewLevelMeter();
 }
 
 function signOut() {
@@ -266,13 +340,18 @@ function signOut() {
 }
 
 $connect.addEventListener("click", () => void connect());
+$stop.addEventListener("click", () => teardownLive());
 $signOut.addEventListener("click", () => signOut());
-$mute.addEventListener("click", async () => {
+
+$mute.addEventListener("change", async () => {
   if (!track) return;
-  if (track.isMuted) await track.unmute();
-  else await track.mute();
-  $muteLabel.textContent = track.isMuted ? "Unmute" : "Mute";
-  syncBroadcasting();
+  // Toggle is "on" = broadcasting (not muted).
+  if ($mute.checked) {
+    await track.unmute();
+  } else {
+    await track.mute();
+  }
+  syncMuteState();
 });
 
 void loadMics();

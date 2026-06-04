@@ -3,24 +3,42 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#06101c" />
+    <meta name="theme-color" content="#ffffff" />
     <title>Live Translation</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <main>
-      <h1>Live Translation</h1>
-      <label>
+      <div id="hero" class="hero-strip" hidden></div>
+
+      <div class="heading-group">
+        <h1>Live Translation</h1>
+        <p class="hint" id="intro">Pick an event and language to start listening.</p>
+      </div>
+
+      <label id="event-label">
         Event
         <select id="event"></select>
       </label>
-      <label>
+      <label id="language-label">
         Language
         <select id="language"></select>
       </label>
-      <button id="play" class="primary" disabled><span>▶ Play</span></button>
-      <div class="level"><div id="level" class="level-bar"></div></div>
-      <div id="speaker" class="speaker" hidden></div>
+
+      <button id="play" class="primary large block" disabled>
+        <span id="play-label">▶  Listen</span>
+      </button>
+
+      <div id="now-playing" class="now-playing" hidden>
+        <span class="now-playing-flag" id="np-flag"></span>
+        <span><strong id="np-name"></strong> <span id="np-suffix">is translating for you</span></span>
+      </div>
+
+      <div id="level-wrap" hidden>
+        <div class="level"><div id="level" class="level-bar"></div></div>
+      </div>
+
+      <div id="status" class="status"></div>
       <audio id="audio" autoplay playsinline></audio>
     </main>
     <script type="module" src="/src/listener.ts"></script>

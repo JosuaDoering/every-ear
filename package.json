@@ -1,13 +1,21 @@
 {
-  "name": "locallingua",
+  "name": "every-ear",
   "version": "0.1.0",
   "private": true,
   "description": "Self-hosted live translation for events. Runs on macOS and Windows 11.",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "show-url": "node scripts/show-url.mjs",
-    "install:all": "npm install --prefix backend && npm install --prefix frontend",
-    "build": "npm run build --prefix frontend"
+    "install:all": "npm install --prefix backend && npm install --prefix frontend && npm install --prefix desktop",
+    "build": "npm run build --prefix frontend",
+    "desktop:fetch-binaries": "node desktop/scripts/fetch-binaries.mjs",
+    "desktop:build:backend": "npm run build --prefix backend",
+    "desktop:build:frontend": "npm run build --prefix frontend",
+    "desktop:build:main": "npm run build --prefix desktop",
+    "desktop:build": "npm run desktop:build:backend && npm run desktop:build:frontend && npm run desktop:build:main",
+    "desktop:dev": "npm run desktop:build:backend && npm run desktop:build:frontend && npm run dev --prefix desktop",
+    "desktop:dist:mac": "npm run desktop:fetch-binaries && npm run desktop:build && npm run dist:mac --prefix desktop",
+    "desktop:dist:win": "npm run desktop:fetch-binaries && npm run desktop:build && npm run dist:win --prefix desktop"
   },
   "dependencies": {
     "qrcode-terminal": "^0.12.0"

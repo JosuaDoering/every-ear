@@ -1,0 +1,67 @@
+appId: com.everyear.desktop
+productName: Every Ear
+copyright: Copyright © 2026 Every Ear
+
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - "build/**"
+  - "package.json"
+  - "node_modules/**"
+  - "!**/*.map"
+  - "!**/.DS_Store"
+
+extraResources:
+  - from: "../backend/dist"
+    to: "backend/dist"
+  - from: "../backend/package.json"
+    to: "backend/package.json"
+  - from: "../backend/node_modules"
+    to: "backend/node_modules"
+  - from: "../frontend/dist"
+    to: "frontend/dist"
+  - from: "resources/Caddyfile.tmpl"
+    to: "Caddyfile"
+  - from: "resources/livekit.yaml"
+    to: "livekit.yaml"
+  - from: "resources/tray-icon.png"
+    to: "tray-icon.png"
+  - from: "resources/tray-icon@2x.png"
+    to: "tray-icon@2x.png"
+  - from: "resources/icon.png"
+    to: "icon.png"
+  - from: "resources/bin/${os}/${arch}/"
+    to: "bin/"
+    filter: ["**/*"]
+
+mac:
+  category: public.app-category.utilities
+  icon: resources/icon.icns
+  # arm64 only by default. To also produce an x64 DMG, install an x64
+  # C cross-toolchain (LiveKit needs CGO to cross-compile), set
+  # EVERY_EAR_MAC_ARCHS=arm64,x64 before running fetch-binaries, then
+  # add `- x64` to the arch list below.
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+win:
+  icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  signtoolOptions: null
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true

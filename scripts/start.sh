@@ -15,7 +15,7 @@ if command -v overmind >/dev/null 2>&1; then
   # Caddy needs to bind to 443. On macOS, ports <1024 require sudo unless we
   # delegate that capability. overmind doesn't support per-process sudo, so
   # we elevate the whole tree once and use caffeinate to keep the system awake.
-  echo "Starting LocalLingua via overmind. Sudo is needed once so Caddy can bind to :443."
+  echo "Starting Every Ear via overmind. Sudo is needed once so Caddy can bind to :443."
   exec sudo -E caffeinate -dimsu overmind start --procfile Procfile
 else
   echo "overmind not installed — starting via the cross-platform orchestrator."
