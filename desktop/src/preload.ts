@@ -10,6 +10,25 @@ export type LanCandidateView = {
   isDefaultRoute: boolean;
 };
 
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "uptodate"
+  | "error";
+
+export type UpdateState = {
+  platform: "win" | "mac" | "other";
+  current: string;
+  latest: string | null;
+  status: UpdateStatus;
+  downloadPercent?: number;
+  downloadUrl?: string | null;
+  error?: string | null;
+};
+
 export type StatusView = {
   listenerUrl: string | null;
   adminUrl: string | null;
@@ -30,6 +49,7 @@ export type StatusView = {
   netcupApiPassword: string | null;
   firewallWarning: string | null;
   firewallBinaryPath: string | null;
+  update: UpdateState;
 };
 
 export type ManualDnsChallenge = {
@@ -91,6 +111,12 @@ const api = {
     ipcRenderer.invoke("settings:openFirewallSettings"),
   acknowledgeFirstRun: (): Promise<void> =>
     ipcRenderer.invoke("settings:acknowledgeFirstRun"),
+  checkForUpdates: (): Promise<StatusView> =>
+    ipcRenderer.invoke("settings:checkForUpdates"),
+  downloadUpdate: (): Promise<StatusView> =>
+    ipcRenderer.invoke("settings:downloadUpdate"),
+  installUpdate: (): Promise<StatusView> =>
+    ipcRenderer.invoke("settings:installUpdate"),
   onStatusChanged: (cb: (status: StatusView) => void): (() => void) => {
     const listener = (_e: unknown, status: StatusView) => cb(status);
     ipcRenderer.on("settings:status-changed", listener);

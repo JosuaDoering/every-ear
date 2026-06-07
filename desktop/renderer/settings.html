@@ -322,6 +322,19 @@
         <section class="card panel" id="panel-advanced" hidden>
           <h2>Advanced</h2>
 
+          <div class="field-group" id="updates-group">
+            <strong>Updates</strong>
+            <p id="update-version-line" class="hint">Installed version: —</p>
+            <div class="row">
+              <button id="check-updates" class="primary small" type="button">Check for updates</button>
+              <button id="download-update" class="small" type="button" hidden>Download update</button>
+              <button id="install-update" class="primary small" type="button" hidden>Restart &amp; install</button>
+            </div>
+            <p id="update-status" class="muted"></p>
+          </div>
+
+          <hr class="divider" />
+
           <div class="field-group">
             <button id="reveal-logs" class="ghost small" type="button">Reveal log folder</button>
             <p id="log-path-hint" class="hint"></p>

@@ -1,0 +1,84 @@
+# Publish a release on a version tag (e.g. v1.2.3). Builds macOS (arm64) and
+# Windows (x64), uploads both — plus the Windows auto-update feed (latest.yml)
+# — to a single draft GitHub Release, then flips that draft to published so the
+# two platform assets appear together. The Windows app auto-updates from this
+# feed; macOS detects the new release via the GitHub API and links to the DMG.
+name: Release desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    # Serialize so the two jobs don't race to create the draft release.
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - uses: actions/setup-go@v5
+        if: matrix.platform == 'mac'
+        with:
+          go-version: stable
+
+      - run: npm ci
+      - run: npm ci
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+        working-directory: desktop
+
+      # The published version must match the pushed tag (electron-builder names
+      # the artifacts and the release tag from desktop/package.json's version).
+      - name: Set version from tag
+        shell: bash
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+        working-directory: desktop
+
+      - name: Fetch native binaries (LiveKit + Caddy)
+        run: npm run desktop:fetch-binaries
+
+      - name: Build backend + frontend + main
+        run: npm run desktop:build
+
+      - name: Build & publish (${{ matrix.platform }})
+        run: npm run release:${{ matrix.platform }} --prefix desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-release:
+    name: Publish draft release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Flip draft to published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest

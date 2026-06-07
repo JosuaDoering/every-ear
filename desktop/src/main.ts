@@ -23,6 +23,7 @@ import * as supervisor from "./supervisor";
 import * as settingsWindow from "./settings-window";
 import type { StatusView } from "./preload";
 import * as tray from "./tray";
+import * as updater from "./updater";
 
 // Hide Every Ear from the macOS dock — we're a tray-only app. Has to
 // happen before app is ready.
@@ -69,6 +70,10 @@ app.whenReady().then(async () => {
     quit: () => {
       void quitApp();
     },
+    updateState: () => updater.getState(),
+    checkForUpdates: () => void updater.checkForUpdates(),
+    downloadUpdate: () => void updater.downloadUpdate(),
+    installUpdate: () => void updater.installUpdate(),
   });
 
   settingsWindow.registerIpc(
@@ -220,9 +225,30 @@ app.whenReady().then(async () => {
           );
         }
       },
+      checkForUpdates: async () => {
+        await updater.checkForUpdates();
+        return buildStatus();
+      },
+      downloadUpdate: async () => {
+        await updater.downloadUpdate();
+        return buildStatus();
+      },
+      installUpdate: async () => {
+        updater.installUpdate();
+        return buildStatus();
+      },
     },
     { logDir: logDir() },
   );
+
+  // Background update channel: Windows auto-updates, macOS detects + notifies.
+  // Any state change refreshes both the settings window and the tray label.
+  updater.initUpdater({
+    onState: () => {
+      broadcastStatus();
+      tray.refresh();
+    },
+  });
 
   if (isFirstRun) {
     showSettings();
@@ -246,6 +272,7 @@ app.on("will-quit", async (e) => {
     e.preventDefault();
     await supervisor.stop().catch(() => {});
     if (watcherTimer) clearInterval(watcherTimer);
+    updater.disposeUpdater();
     settingsWindow.unregisterIpc();
     tray.destroy();
     app.exit(0);
@@ -320,6 +347,7 @@ async function quitApp(): Promise<void> {
   appQuitting = true;
   await supervisor.stop().catch(() => {});
   if (watcherTimer) clearInterval(watcherTimer);
+  updater.disposeUpdater();
   settingsWindow.unregisterIpc();
   tray.destroy();
   app.exit(0);
@@ -417,6 +445,7 @@ async function buildStatus(): Promise<StatusView> {
     netcupApiPassword: cfg.netcupApiPassword ?? null,
     firewallWarning: firewallCheck.getCached().warning,
     firewallBinaryPath: firewallCheck.getCached().binaryPath,
+    update: updater.getState(),
   };
 }
 

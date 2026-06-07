@@ -6,6 +6,15 @@ directories:
   output: dist
   buildResources: resources
 
+# Auto-update feed + release publishing target (GitHub Releases). electron-builder
+# bundles an app-update.yml from this so the Windows autoUpdater knows where to look,
+# and CI publishes signed-less artifacts here on a version tag. Default releaseType is
+# "draft" — CI flips the release to published once both platforms have uploaded.
+publish:
+  provider: github
+  owner: JosuaDoering
+  repo: every-ear
+
 files:
   - "build/**"
   - "package.json"

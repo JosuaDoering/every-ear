@@ -5,6 +5,7 @@ import { Menu, Tray, app, clipboard, nativeImage, shell } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { isPackaged } from "./paths";
+import type { UpdateState } from "./preload";
 
 type TrayContext = {
   listenerUrl: () => string | null;
@@ -12,6 +13,10 @@ type TrayContext = {
   openSettings: () => void;
   copyAdminPassword: () => Promise<void>;
   quit: () => void;
+  updateState: () => UpdateState;
+  checkForUpdates: () => void;
+  downloadUpdate: () => void;
+  installUpdate: () => void;
 };
 
 let trayInstance: Tray | null = null;
@@ -76,6 +81,7 @@ function rebuildMenu(): void {
       },
     },
     { type: "separator" },
+    updateMenuItem(),
     {
       label: "Settings…",
       click: () => ctx!.openSettings(),
@@ -92,6 +98,23 @@ function rebuildMenu(): void {
   ];
 
   trayInstance.setContextMenu(Menu.buildFromTemplate(items));
+}
+
+// The update entry changes with the channel's state: a ready Windows download
+// offers a restart, a found update offers a download, otherwise it's a plain
+// "check now".
+function updateMenuItem(): Electron.MenuItemConstructorOptions {
+  const u = ctx!.updateState();
+  if (u.platform === "win" && u.status === "ready") {
+    return { label: `Restart to update (${u.latest})…`, click: () => ctx!.installUpdate() };
+  }
+  if (u.status === "available") {
+    return { label: `Download update (${u.latest})…`, click: () => ctx!.downloadUpdate() };
+  }
+  if (u.status === "downloading") {
+    return { label: `Downloading update… ${u.downloadPercent ?? 0}%`, enabled: false };
+  }
+  return { label: "Check for updates…", click: () => ctx!.checkForUpdates() };
 }
 
 function trayIconPath(): string {

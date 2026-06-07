@@ -7,6 +7,23 @@ type LanCandidateView = {
   isDefaultRoute: boolean;
 };
 
+type UpdateState = {
+  platform: "win" | "mac" | "other";
+  current: string;
+  latest: string | null;
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "ready"
+    | "uptodate"
+    | "error";
+  downloadPercent?: number;
+  downloadUrl?: string | null;
+  error?: string | null;
+};
+
 type StatusView = {
   listenerUrl: string | null;
   adminUrl: string | null;
@@ -27,6 +44,7 @@ type StatusView = {
   netcupApiPassword: string | null;
   firewallWarning: string | null;
   firewallBinaryPath: string | null;
+  update: UpdateState;
 };
 
 declare global {
@@ -68,6 +86,9 @@ declare global {
       refreshFirewallCheck: () => Promise<StatusView>;
       openFirewallSettings: () => Promise<void>;
       acknowledgeFirstRun: () => Promise<void>;
+      checkForUpdates: () => Promise<StatusView>;
+      downloadUpdate: () => Promise<StatusView>;
+      installUpdate: () => Promise<StatusView>;
       onStatusChanged: (cb: (status: StatusView) => void) => () => void;
     };
   }
@@ -129,6 +150,11 @@ const els = {
   revealLogs: $<HTMLButtonElement>("reveal-logs"),
   logPathHint: $<HTMLElement>("log-path-hint"),
   versionHint: $<HTMLElement>("version-hint"),
+  checkUpdates: $<HTMLButtonElement>("check-updates"),
+  downloadUpdate: $<HTMLButtonElement>("download-update"),
+  installUpdate: $<HTMLButtonElement>("install-update"),
+  updateVersionLine: $<HTMLElement>("update-version-line"),
+  updateStatus: $<HTMLElement>("update-status"),
   firstRunModal: $<HTMLDivElement>("first-run-modal"),
   firstRunPassword: $<HTMLElement>("first-run-password"),
   firstRunCopy: $<HTMLButtonElement>("first-run-copy"),
@@ -219,6 +245,7 @@ function applyStatus(s: StatusView): void {
   // Advanced details
   els.logPathHint.textContent = `Log files: ${s.logDir}`;
   els.versionHint.textContent = `Every Ear ${s.version}`;
+  renderUpdate(s.update);
 
   // Firewall warning
   if (s.firewallWarning) {
@@ -601,6 +628,85 @@ els.resetData.addEventListener("click", async () => {
 
 els.revealLogs.addEventListener("click", () => {
   void window.everyEar.revealLogs();
+});
+
+// ---- Updates ---------------------------------------------------------------
+
+function setUpdateStatus(text: string, kind: "info" | "ok" | "error" = "info") {
+  els.updateStatus.textContent = text;
+  els.updateStatus.className =
+    kind === "error" ? "error" : kind === "ok" ? "ok muted" : "muted";
+}
+
+function renderUpdate(u: UpdateState): void {
+  let line = `Installed version: ${u.current}`;
+  let status = "";
+  let kind: "info" | "ok" | "error" = "info";
+  els.downloadUpdate.hidden = true;
+  els.installUpdate.hidden = true;
+
+  switch (u.status) {
+    case "checking":
+      status = "Checking for updates…";
+      break;
+    case "uptodate":
+      status = "You're on the latest version.";
+      kind = "ok";
+      break;
+    case "available":
+      line = `Installed version: ${u.current} · New version ${u.latest} available`;
+      els.downloadUpdate.hidden = false;
+      els.downloadUpdate.textContent =
+        u.platform === "mac" ? "Download update" : "Download now";
+      status =
+        u.platform === "mac"
+          ? "Opens the download — install it like the first time."
+          : "";
+      break;
+    case "downloading":
+      status = `Downloading update… ${u.downloadPercent ?? 0}%`;
+      break;
+    case "ready":
+      line = `Installed version: ${u.current} · Version ${u.latest} ready`;
+      els.installUpdate.hidden = false;
+      status = "Update downloaded — restart to install.";
+      kind = "ok";
+      break;
+    case "error":
+      status = u.error ? `Update check failed: ${u.error}` : "Update check failed.";
+      kind = "error";
+      break;
+    default:
+      status = "";
+  }
+
+  els.updateVersionLine.textContent = line;
+  setUpdateStatus(status, kind);
+}
+
+els.checkUpdates.addEventListener("click", async () => {
+  els.checkUpdates.disabled = true;
+  try {
+    applyStatus(await window.everyEar.checkForUpdates());
+  } catch (err) {
+    setUpdateStatus(describeError(err, "Update check failed."), "error");
+  } finally {
+    els.checkUpdates.disabled = false;
+  }
+});
+
+els.downloadUpdate.addEventListener("click", async () => {
+  els.downloadUpdate.disabled = true;
+  try {
+    applyStatus(await window.everyEar.downloadUpdate());
+  } finally {
+    els.downloadUpdate.disabled = false;
+  }
+});
+
+els.installUpdate.addEventListener("click", () => {
+  // Triggers app quit + installer on Windows; on macOS just opens the download.
+  void window.everyEar.installUpdate();
 });
 
 els.firewallOpen.addEventListener("click", () => {

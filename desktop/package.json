@@ -11,10 +11,13 @@
     "build": "npm run build:tsc && npm run build:renderer && npm run build:assets",
     "dev": "npm run build && electron .",
     "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "release:mac": "electron-builder --mac --publish always",
+    "release:win": "electron-builder --win --publish always"
   },
   "dependencies": {
-    "acme-client": "^5.4.0"
+    "acme-client": "^5.4.0",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

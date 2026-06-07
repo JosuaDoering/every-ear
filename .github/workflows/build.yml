@@ -1,0 +1,72 @@
+# PR validation: package the desktop app for macOS (arm64) and Windows (x64)
+# so we know a release would build. Artifacts are attached to the run; nothing
+# is published. Releases happen on a version tag — see release.yml.
+name: Build desktop
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      # macOS has no prebuilt LiveKit binary — fetch-binaries compiles it from
+      # source with Go (CGO disabled, so no C toolchain needed).
+      - uses: actions/setup-go@v5
+        if: matrix.platform == 'mac'
+        with:
+          go-version: stable
+
+      - run: npm ci
+      - run: npm ci
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+        working-directory: desktop
+
+      - name: Fetch native binaries (LiveKit + Caddy)
+        run: npm run desktop:fetch-binaries
+
+      - name: Build backend + frontend + main
+        run: npm run desktop:build
+
+      - name: Package (${{ matrix.platform }})
+        run: npm run dist:${{ matrix.platform }} --prefix desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: every-ear-${{ matrix.platform }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+            desktop/dist/*.blockmap
+            desktop/dist/latest*.yml
+          if-no-files-found: warn

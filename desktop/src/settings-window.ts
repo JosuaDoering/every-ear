@@ -117,6 +117,9 @@ export type SettingsHandlers = {
   acknowledgeFirstRun: () => Promise<void>;
   refreshFirewallCheck: () => Promise<StatusView>;
   openFirewallSettings: () => Promise<void>;
+  checkForUpdates: () => Promise<StatusView>;
+  downloadUpdate: () => Promise<StatusView>;
+  installUpdate: () => Promise<StatusView>;
 };
 
 export function registerIpc(handlers: SettingsHandlers, paths: { logDir: string }): void {
@@ -186,6 +189,9 @@ export function registerIpc(handlers: SettingsHandlers, paths: { logDir: string 
   });
   ipcMain.handle("settings:refreshFirewallCheck", () => handlers.refreshFirewallCheck());
   ipcMain.handle("settings:openFirewallSettings", () => handlers.openFirewallSettings());
+  ipcMain.handle("settings:checkForUpdates", () => handlers.checkForUpdates());
+  ipcMain.handle("settings:downloadUpdate", () => handlers.downloadUpdate());
+  ipcMain.handle("settings:installUpdate", () => handlers.installUpdate());
 }
 
 export function unregisterIpc(): void {
@@ -205,6 +211,9 @@ export function unregisterIpc(): void {
     "settings:revealLogs",
     "settings:refreshFirewallCheck",
     "settings:openFirewallSettings",
+    "settings:checkForUpdates",
+    "settings:downloadUpdate",
+    "settings:installUpdate",
   ]) {
     ipcMain.removeHandler(channel);
   }
