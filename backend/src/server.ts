@@ -11,11 +11,14 @@ import {
 } from "./languages.js";
 import { adminPlugin } from "./admin.js";
 import { registerBackgroundRoutes } from "./background.js";
+import { startStatsCollector } from "./stats.js";
 import { loadAiConfig } from "./ai/config.js";
 import { translateStream, type TranslateError } from "./ai/translate.js";
 
 async function start() {
-  const app = Fastify({ logger: true });
+  // trustProxy so req.ip reflects the real client behind the Caddy reverse
+  // proxy (via X-Forwarded-For) rather than 127.0.0.1.
+  const app = Fastify({ logger: true, trustProxy: true });
 
   await app.register(multipart, {
     limits: { fileSize: 10 * 1024 * 1024 },
@@ -71,7 +74,7 @@ async function start() {
       if (!eventLangs.includes(language)) {
         return reply.code(400).send({ error: "language not in event" });
       }
-      const token = await listenerToken(eventId, language);
+      const token = await listenerToken(eventId, language, req.ip);
       return { token, room: config.roomFor(eventId, language) };
     },
   );
@@ -196,6 +199,10 @@ async function start() {
   await listCodes();
 
   await app.listen({ port: config.port, host: "127.0.0.1" });
+
+  // Begin polling LiveKit for per-channel listener/broadcast stats. Runs in the
+  // background; failures (e.g. LiveKit not up yet) are retried on each tick.
+  void startStatsCollector();
 }
 
 start().catch((err) => {

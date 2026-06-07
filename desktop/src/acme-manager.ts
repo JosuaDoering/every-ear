@@ -1,4 +1,5 @@
 import { Client, forge, directory } from "acme-client";
+import type { Order, Authorization } from "acme-client";
 import dns from "node:dns";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -40,19 +41,24 @@ async function waitForDnsPropagation(
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       const reason = code === "ENOTFOUND" || code === "ENODATA" ? "record not visible yet" : (err instanceof Error ? err.message : "DNS error");
-      onProgress(`Attempt ${attempt}/${maxAttempts}: ${reason}. Retrying in 60 s…`);
+      onProgress(`Attempt ${attempt}/${maxAttempts}: ${reason}. Retrying soon…`);
     }
     if (attempt < maxAttempts) await sleep(intervalMs);
   }
-  throw new Error(`DNS record did not propagate within ${maxAttempts} minutes. Check the TXT record in your Netcup CCP.`);
+  throw new Error(`DNS record did not become visible in time. Double-check the TXT record at your DNS provider, then try again.`);
 }
 
-export async function obtainCertificateViaNetcup(
-  domain: string,
-  creds: NetcupCreds,
-  onProgress: (msg: string) => void,
-): Promise<{ certFile: string; keyFile: string }> {
-  onProgress("Preparing ACME account…");
+// The exact DNS record the user must create when issuing manually. Mirrors what
+// the renderer shows in the "Other / manual" provider guide.
+export type ManualDnsChallenge = {
+  recordType: "TXT";
+  recordName: string;
+  recordValue: string;
+};
+
+// Shared ACME plumbing -------------------------------------------------------
+
+async function createAcmeClient(): Promise<Client> {
   let accountKey: Buffer;
   const akPath = acmeAccountKeyPath();
   if (existsSync(akPath)) {
@@ -61,13 +67,22 @@ export async function obtainCertificateViaNetcup(
     accountKey = await forge.createPrivateKey();
     writeFileSync(akPath, accountKey, { mode: 0o600 });
   }
-
   const client = new Client({ directoryUrl: directory.letsencrypt.production, accountKey });
   await client.createAccount({ termsOfServiceAgreed: true });
+  return client;
+}
 
-  onProgress("Creating certificate order…");
+type PreparedOrder = {
+  order: Order;
+  authorization: Authorization;
+  challenge: Authorization["challenges"][number];
+  txtValue: string;
+  zone: string;
+  fqdn: string;
+};
+
+async function startDns01Order(client: Client, domain: string): Promise<PreparedOrder> {
   const order = await client.createOrder({ identifiers: [{ type: "dns", value: domain }] });
-
   const authorizations = await client.getAuthorizations(order);
   const authorization = authorizations[0];
   if (!authorization) throw new Error("No authorization returned from Let's Encrypt.");
@@ -77,42 +92,101 @@ export async function obtainCertificateViaNetcup(
 
   const txtValue = await client.getChallengeKeyAuthorization(challenge);
   const { zone, fqdn } = extractZoneAndFqdn(domain);
+  return { order, authorization, challenge, txtValue, zone, fqdn };
+}
+
+async function completeAndInstall(
+  client: Client,
+  prepared: PreparedOrder,
+  domain: string,
+  onProgress: (msg: string) => void,
+): Promise<{ certFile: string; keyFile: string }> {
+  onProgress("Requesting Let's Encrypt validation…");
+  await client.verifyChallenge(prepared.authorization, prepared.challenge);
+  await client.completeChallenge(prepared.challenge);
+  await client.waitForValidStatus(prepared.authorization);
+
+  onProgress("Finalizing certificate order…");
+  const domainKey = await forge.createPrivateKey();
+  const [, csr] = await forge.createCsr({ commonName: domain, altNames: [domain] }, domainKey);
+  await client.finalizeOrder(prepared.order, csr);
+  const validOrder = await client.waitForValidStatus(prepared.order);
+  const cert = await client.getCertificate(validOrder);
+
+  onProgress("Installing certificate…");
+  const certsDir = acmeCertsDir();
+  mkdirSync(certsDir, { recursive: true });
+  const certFile = path.join(certsDir, "cert.pem");
+  const keyFile = path.join(certsDir, "key.pem");
+  writeFileSync(certFile, cert, { mode: 0o600 });
+  writeFileSync(keyFile, domainKey, { mode: 0o600 });
+  return { certFile, keyFile };
+}
+
+// Automatic issuance via the Netcup DNS API.
+export async function obtainCertificateViaNetcup(
+  domain: string,
+  creds: NetcupCreds,
+  onProgress: (msg: string) => void,
+): Promise<{ certFile: string; keyFile: string }> {
+  onProgress("Preparing ACME account…");
+  const client = await createAcmeClient();
+
+  onProgress("Creating certificate order…");
+  const prepared = await startDns01Order(client, domain);
 
   onProgress("Logging in to Netcup…");
   const sessionId = await netcupDns.login(creds);
 
   try {
     onProgress("Adding DNS TXT record…");
-    await netcupDns.addTxtRecord(zone, fqdn, txtValue, creds, sessionId);
+    await netcupDns.addTxtRecord(prepared.zone, prepared.fqdn, prepared.txtValue, creds, sessionId);
 
     onProgress("Waiting for DNS propagation (checks every 60 s)…");
-    await waitForDnsPropagation(fqdn, txtValue, onProgress);
+    await waitForDnsPropagation(prepared.fqdn, prepared.txtValue, onProgress);
 
-    onProgress("Requesting Let's Encrypt validation…");
-    await client.verifyChallenge(authorization, challenge);
-    await client.completeChallenge(challenge);
-    await client.waitForValidStatus(authorization);
-
-    onProgress("Finalizing certificate order…");
-    const domainKey = await forge.createPrivateKey();
-    const [, csr] = await forge.createCsr({ commonName: domain, altNames: [domain] }, domainKey);
-    await client.finalizeOrder(order, csr);
-    const validOrder = await client.waitForValidStatus(order);
-    const cert = await client.getCertificate(validOrder);
-
-    onProgress("Installing certificate…");
-    const certsDir = acmeCertsDir();
-    mkdirSync(certsDir, { recursive: true });
-    const certFile = path.join(certsDir, "cert.pem");
-    const keyFile = path.join(certsDir, "key.pem");
-    writeFileSync(certFile, cert, { mode: 0o600 });
-    writeFileSync(keyFile, domainKey, { mode: 0o600 });
+    const result = await completeAndInstall(client, prepared, domain, onProgress);
 
     onProgress("Removing DNS TXT record…");
-    await netcupDns.removeTxtRecord(zone, fqdn, txtValue, creds, sessionId).catch(() => {});
+    await netcupDns
+      .removeTxtRecord(prepared.zone, prepared.fqdn, prepared.txtValue, creds, sessionId)
+      .catch(() => {});
 
-    return { certFile, keyFile };
+    return result;
   } finally {
     await netcupDns.logout(creds, sessionId);
   }
+}
+
+// Manual issuance: works with any DNS provider. The caller (settings UI) shows
+// the user the exact TXT record via `onChallenge`; we then poll public
+// resolvers until they create it, finish the order, and leave the record in
+// place for the user to delete afterwards.
+export async function obtainCertificateManual(
+  domain: string,
+  onProgress: (msg: string) => void,
+  onChallenge: (challenge: ManualDnsChallenge) => void,
+): Promise<{ certFile: string; keyFile: string }> {
+  onProgress("Preparing ACME account…");
+  const client = await createAcmeClient();
+
+  onProgress("Creating certificate order…");
+  const prepared = await startDns01Order(client, domain);
+
+  onChallenge({
+    recordType: "TXT",
+    recordName: prepared.fqdn,
+    recordValue: prepared.txtValue,
+  });
+
+  // Patient poll: 20 s × 30 = up to 10 min for the user to log in and add it.
+  onProgress("Waiting for the TXT record to appear (checks every 20 s)…");
+  await waitForDnsPropagation(prepared.fqdn, prepared.txtValue, onProgress, {
+    intervalMs: 20_000,
+    maxAttempts: 30,
+  });
+
+  const result = await completeAndInstall(client, prepared, domain, onProgress);
+  onProgress("Certificate installed. You can now delete the TXT record at your DNS provider.");
+  return result;
 }

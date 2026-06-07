@@ -32,6 +32,9 @@
               <code id="qr-listener-url" class="qr-url"></code>
               <button id="copy-listener" class="ghost small" type="button">Copy</button>
             </div>
+            <button id="poster-listener" class="secondary small" type="button">
+              <span>Show poster</span>
+            </button>
           </div>
           <div class="qr-card">
             <h3>Translator</h3>
@@ -43,7 +46,53 @@
               <code id="qr-translator-url" class="qr-url"></code>
               <button id="copy-translator" class="ghost small" type="button">Copy</button>
             </div>
+            <button id="poster-translator" class="secondary small" type="button">
+              <span>Show poster</span>
+            </button>
           </div>
+        </div>
+
+        <div class="poster-wifi">
+          <h3>Wi-Fi for the poster</h3>
+          <p class="hint">
+            These details are added to the poster as a scannable Wi-Fi code, so guests
+            can join the network and then open the page in two scans.
+          </p>
+          <div class="poster-form">
+            <label>
+              Wi-Fi network name (SSID)
+              <input id="wifi-ssid" type="text" placeholder="EventGuest" autocomplete="off" spellcheck="false" />
+            </label>
+            <label>
+              Security
+              <select id="wifi-auth">
+                <option value="WPA">WPA / WPA2 / WPA3 (most common)</option>
+                <option value="WEP">WEP (older networks)</option>
+                <option value="nopass">Open — no password</option>
+              </select>
+            </label>
+            <label id="wifi-password-label" class="full">
+              Wi-Fi password
+              <div class="password-field">
+                <input id="wifi-password" type="password" autocomplete="off" spellcheck="false" />
+                <button type="button" id="wifi-password-toggle" class="password-toggle" aria-label="Show password"></button>
+              </div>
+            </label>
+            <label class="checkbox-line full">
+              <input id="wifi-hidden" type="checkbox" />
+              <span>Hidden network (does not broadcast its name)</span>
+            </label>
+          </div>
+          <span id="poster-status" class="hint"></span>
+        </div>
+
+        <div id="poster-preview" class="poster-preview" hidden>
+          <canvas id="poster-canvas" aria-label="Connection poster preview"></canvas>
+        </div>
+
+        <div id="poster-actions" class="row" hidden>
+          <button id="download-poster" class="primary" type="button"><span>Download PNG</span></button>
+          <button id="copy-poster" class="secondary" type="button"><span>Copy image</span></button>
         </div>
       </section>
 
@@ -125,15 +174,33 @@
             <h3>Translator codes</h3>
             <p class="hint">One code per translator. Each code unlocks one language channel for this event.</p>
             <div id="code-list" class="code-list"></div>
-            <form id="code-form" class="code-form-row">
+
+            <div class="code-add">
+              <button type="button" id="code-add-btn" class="secondary small code-add-btn" aria-haspopup="true" aria-expanded="false">
+                <span>＋ Add code</span>
+              </button>
+              <div id="code-add-menu" class="code-add-menu" role="menu" hidden>
+                <button type="button" id="code-add-translator" role="menuitem">🎙️ Translator code</button>
+                <button type="button" id="code-add-ai" role="menuitem">🤖 AI-operator code</button>
+              </div>
+            </div>
+
+            <form id="code-form" class="code-form-row" hidden>
               <select id="code-language" aria-label="Language"></select>
               <input id="code-name" type="text" placeholder="Translator name" />
               <button type="submit" id="code-submit" class="primary"><span>Generate code</span></button>
             </form>
-            <form id="ai-code-form" class="code-form-row">
+            <form id="ai-code-form" class="code-form-row" hidden>
               <input id="ai-code-name" type="text" placeholder="AI operator name" />
               <button type="submit" id="ai-code-submit" class="secondary"><span>Generate AI-operator code</span></button>
             </form>
+          </div>
+
+          <div class="admin-subblock">
+            <h3>Channel statistics</h3>
+            <p class="hint">Per language channel: listeners connected right now, unique listeners in the last 24 hours, and effective translation broadcast time.</p>
+            <div id="detail-stats" class="stats-list"></div>
+            <div id="detail-history" class="stats-chart" hidden></div>
           </div>
 
           <div class="admin-subblock">

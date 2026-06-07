@@ -2,7 +2,7 @@
 // so re-opening from the tray reuses the same instance.
 
 import { BrowserWindow, ipcMain, shell, clipboard, dialog } from "electron";
-import type { StatusView } from "./preload";
+import type { StatusView, ManualDnsChallenge } from "./preload";
 import { isPackaged } from "./paths";
 
 let window: BrowserWindow | null = null;
@@ -20,10 +20,10 @@ export function createOrShow(opts: {
   }
 
   window = new BrowserWindow({
-    width: 720,
-    height: 660,
-    minWidth: 560,
-    minHeight: 520,
+    width: 840,
+    height: 680,
+    minWidth: 720,
+    minHeight: 540,
     title: "Every Ear — Settings",
     show: false,
     icon: opts.iconPath,
@@ -74,6 +74,12 @@ export function broadcastAcmeProgress(msg: string): void {
   }
 }
 
+export function broadcastAcmeChallenge(challenge: ManualDnsChallenge): void {
+  if (window && !window.isDestroyed()) {
+    window.webContents.send("settings:acme-challenge", challenge);
+  }
+}
+
 export function close(): void {
   if (window && !window.isDestroyed()) {
     window.removeAllListeners("close");
@@ -99,6 +105,7 @@ export type SettingsHandlers = {
     netcupApiKey: string;
     netcupApiPassword: string;
   }) => Promise<StatusView>;
+  obtainCertificateManual: (opts: { domain: string }) => Promise<StatusView>;
   updateDnsRecord: (opts: {
     domain: string;
     netcupCustomerId: string;
@@ -137,6 +144,10 @@ export function registerIpc(handlers: SettingsHandlers, paths: { logDir: string 
         netcupApiPassword: string;
       },
     ) => handlers.obtainCertificate(opts),
+  );
+  ipcMain.handle(
+    "settings:obtainCertificateManual",
+    (_e, opts: { domain: string }) => handlers.obtainCertificateManual(opts),
   );
   ipcMain.handle(
     "settings:updateDnsRecord",
@@ -184,6 +195,7 @@ export function unregisterIpc(): void {
     "settings:setInterface",
     "settings:setCaddyTls",
     "settings:obtainCertificate",
+    "settings:obtainCertificateManual",
     "settings:updateDnsRecord",
     "settings:pickFile",
     "settings:regenerateCredentials",

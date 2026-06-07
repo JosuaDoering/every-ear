@@ -1,197 +1,182 @@
 # Every Ear
 
-**Live translation for your event — straight to people's phones, no app needed.**
+Every Ear is a self-hosted tool for live audio translation at events. A translator speaks into a microphone; people in the room open a web page on their phone, pick a language, and listen. There is no app for guests to install, no account to create, and no internet connection required — everything runs on a single computer on the local network. There are some features that work better with an internet connection, but that is not required.
 
-A translator speaks into a microphone. Everyone in the room opens a website on their
-phone, picks their language, and presses play. That's it. No app store, no sign-up, no
-internet required — everything runs on one computer in the room.
+It ships as a desktop application for macOS and Windows. Guests connect from any device with a web browser.
 
-> **Who is this guide for?** You don't need to be a programmer. If you can copy and paste
-> a line of text and press Enter, you can set this up. Just follow the steps in order.
+## Features
 
----
+- **Browser-based for guests and translators** — listeners and translators use a web page, no app needed.
+- **Multiple languages per event** — one translator (and one audio channel) per language.
+- **Runs locally** — audio stays on your network; no cloud service or internet access needed for a basic event.
+- **Low latency** — typically under ~300 ms on a local network.
+- **Optional trusted HTTPS** — use a self-signed certificate by default, or bring a real domain and a free Let's Encrypt certificate so guests see no browser warning. (This needs an internet connection.)
 
-## What you need
+## Requirements
 
-- **One computer** to run everything (a Mac or a Windows 11 PC). This is the "host".
-- **A network** that everyone is on — ideally a Wi-Fi router with the host plugged in by
-  cable (Ethernet). You do **not** need internet access.
-- **A microphone** for each translator (a headset works great).
-- **Phones** for the listeners — any modern phone with a browser.
+- A **Mac** or **Windows PC** to run the application (referred to as the *host*).
+- A **local network** shared by everyone present. A wired (Ethernet) connection from the host to the router gives the most stable audio. No internet access is required for a basic event.
+- A **microphone** for each translator. The phone's device might be sufficient. Bluetooth headphones are not recommended. 
+- A **web browser** on each listener's device. Listener's can use bluetooth headphones. 
 
----
+## Terminology
 
-## A few words you'll see in this guide
+| Term | Meaning |
+|------|---------|
+| Host | The computer running the Every Ear application. |
+| Translator | The person speaking a translation into a phone/microphone. |
+| Listener | A guest listening on their own device. |
+| Admin | The person configuring the event and generating translator codes. |
+| Settings window | The application's control panel, opened from the menu bar/system tray. |
 
-| Word | What it means |
-|------|---------------|
-| **Host** | The one computer that runs the software. |
-| **Terminal** | A text window where you type commands. On Mac it's the "Terminal" app; on Windows it's "PowerShell". |
-| **Translator** | The person speaking the translation into a microphone. |
-| **Listener** | A guest who listens on their phone. |
-| **Admin** | You — the person setting things up and handing out codes. |
+## Installation
 
-When this guide shows a box like the one below, it means: **type (or paste) that line
-into your Terminal and press Enter.**
+1. Open the project's **Releases** page on GitHub and download the build for your system:
+   - **macOS:** the `.dmg` file (`arm64` for Apple Silicon Macs, `x64` for Intel Macs).
+   - **Windows 11:** the `Setup-….exe` file.
+2. Install it:
+   - **macOS:** open the `.dmg` and drag **Every Ear** into **Applications**.
+   - **Windows:** run the installer and follow the prompts.
 
-```bash
-this is a command
-```
+### Unsigned builds
 
----
+The current releases are not code-signed, so the operating system shows a warning on first launch:
 
-## Step 1 — Install once (only the first time)
+- **macOS:** right-click the app in **Applications**, choose **Open**, then **Open** again. Subsequent launches work normally.
+- **Windows:** on the SmartScreen prompt, click **More info → Run anyway**.
 
-Open a Terminal in the project folder, then run the line for your system.
+## Usage
 
-### On a Mac
+### First launch
 
-```bash
-./scripts/install-mac.sh
-```
+On first launch, Every Ear generates an admin password and shows it once. Copy it and store it somewhere safe. It is used to manage events. The application then runs from the menu bar (macOS) or system tray (Windows). Click its icon to open the **Settings window**.
 
-This installs the needed software, gets everything ready, and creates a settings file
-called `.env`.
+The admin password can be changed later in the Settings window under **Admin Password**.
 
-### On Windows 11
+### Running an event
 
-```powershell
-.\scripts\install-windows.cmd
-```
+1. Connect the host to the event network (Ethernet recommended and WiFi turned off) and to power.
+2. Open the Settings window. Under **Connection** you'll find the **listener URL** and a QR code. If the host has more than one network, pick the right one from the **Network interface** dropdown, or leave it on **Auto**.
+3. Share the listener URL or QR code with your guests (e.g. on a screen or printout).
+4. Generate a code for each translator: click **Open admin** in the app menu (or open the listener URL and append `/admin.html`), log in with the admin password, then create a code by choosing an event, a language, and a name. Events and languages are also managed here.
 
-Windows will show **one security pop-up** (a "User Account Control" prompt) asking for
-permission. Click **Yes** — this lets people reach the website and opens the right network
-ports. Everything else runs normally without admin rights.
+Translators open the translator URL via the QR code (or manually: listener URL with `/translator.html` appended), enter their 6-digit code, and allow microphone access when prompted.
 
-### Set your admin password
+Listeners open the listener URL (or scan the QR code), choose an event and language, and press play. On iOS, audio only starts after a tap, due to browser policy. The first time a device connects it may show a certificate warning (see below).
 
-After installing, open the `.env` settings file and set a password. This password is how
-**you** log in later to hand out translator codes. You can also adjust the list of
-languages here.
+## HTTPS and custom domain
 
-- **Mac:** `open -e .env` (opens it in TextEdit)
-- **Windows:** `notepad .env`
+By default Every Ear serves listeners over HTTPS using a self-signed certificate. The connection is encrypted, but because the certificate is not issued by a recognized authority, browsers show a one-time "not secure" warning that guests dismiss with **Advanced → proceed anyway**. For many events this is sufficient and no further setup is needed.
 
-Find the line `ADMIN_PASSWORD=` and type your password right after the `=`. Save and close.
+To remove the warning, point a domain you own at the host and use a trusted certificate. This section explains the concepts and the options.
 
----
+### How DNS fits in
 
-## Step 2 — On the day of the event
+DNS maps human-readable names (e.g. `events.example.com`) to IP addresses (e.g. `192.168.1.50`). That's like an address book that maps the family name to the address where that family resides. You manage DNS for a domain through the provider you registered it with, by editing **DNS records**. 
 
-### Get everything running
+Two record types are relevant here:
 
-1. Plug the host computer into the event network **by cable** and plug in the **power**.
-2. Start the software:
-   - **Mac:** `./scripts/start.sh`
-   - **Windows:** `.\scripts\start.cmd`
+| Record | Example | Purpose |
+|--------|---------|---------|
+| **A record** | `events.example.com → 192.168.1.50` | Points the name at the host's IP address on the event network, so the name reaches Every Ear. |
+| **TXT record** | `_acme-challenge.events.example.com → <random value>` | A temporary proof of domain ownership that Let's Encrypt checks before issuing a certificate. It needs to be added for the ownership validation and can be removed after the certificate has been issued. |
 
-   On a Mac it asks once for your computer password (this is normal — it's needed to run
-   the website). The computer is also kept awake automatically so nothing stops mid-event.
+For a local event, the A record points at the host's address on the event network (often a private address such as `192.168.x.x` or `10.x.x.x`), so the name only resolves for guests on that same network. The trusted certificate still works regardless, because. Let's Encrypt validates ownership through the TXT record and never needs to reach the host directly.
 
-3. **Leave that window open.** Closing it stops the event.
+### Registering a domain
 
-### Show people where to go
+A domain is required for trusted HTTPS, and registration is inexpensive (commonly a few euros per year). Every Ear includes a built-in integration with **Netcup's** DNS API: after you enter a Netcup API key once, the application can issue the certificate and update the A record without manual action. Any other DNS provider works too — you create the records yourself using the application's manual guide (see *Other providers*).
 
-Open a **second** Terminal window and run:
+### Setting it up
 
-- **Mac:** `./scripts/show-url.sh`
-- **Windows:** `.\scripts\show-url.cmd`
+Open the Settings window. The **Certificate** tab covers the certificate itself, the **DNS** tab shows the record your domain needs and has the A-record update button, and the **Netcup** tab holds the Netcup API credentials. On the **Certificate** tab, enter your domain (e.g. `events.example.com`) in the **Domain** field, then choose an approach.
 
-This shows a web address **and a QR code**. Put the QR code on a screen or print it —
-listeners just scan it with their phone camera.
+#### Let's Encrypt (free, trusted)
 
-### Create a code for each translator
+On the **Certificate** tab, select **Let's Encrypt** and pick a DNS provider.
 
-1. On the host, open the web address it gave you and add `/admin.html` to the end
-   (for example `https://192.168.1.50/admin.html`).
-2. Log in with the **admin password** you set earlier.
-3. For each translator, create a code: pick the **event**, the **language**, and a
-   **name**. You get a **6-digit code**. Give that code to the translator.
+- **Netcup (automatic):** First, on the **Netcup** tab, enter your Netcup **Customer ID**, **API Key**, and **API Password** (created in the Netcup control panel under *Master data → API*). Then, on the **DNS** tab, click **Update A-record to this computer's IP** to point the domain at the host. Finally, on the **Certificate** tab, choose **Netcup** and click **Get certificate**. The app creates the validation record, waits for it to propagate, completes validation, installs the certificate, and removes the record.
+- **Other / manual:** The app shows the exact A and TXT records to create. Add the A record in your provider, click **Get certificate**, then add the TXT record it displays. Every Ear polls public DNS and finishes automatically once the record is visible (up to about ten minutes). The TXT record can be deleted afterwards.
 
-### What the translator does
+#### Own certificate
 
-1. Open the same web address and add `/translator.html` to the end.
-2. Type in **only the 6-digit code** you gave them.
-3. Click **connect** and start speaking. (The browser will ask to use the microphone —
-   click **Allow**.)
+If you already have a certificate (from your provider, your IT department, or a tool such as [Certbot](https://certbot.eff.org/) or [acme.sh](https://github.com/acmesh-official/acme.sh)), open the **Own Certificate** tab, select the PEM-encoded `cert.pem` and `key.pem` files, and click **Save & restart**. Point the A record at the host yourself; the **DNS** tab shows the required record. Use **Reset to internal CA** to return to the default self-signed setup.
 
-### What the listeners do
+### Other providers
 
-1. Scan the QR code (or open the web address).
-2. The first time, the phone shows a security warning because the host makes its own
-   certificate. Tap **Advanced ▸ proceed anyway** — this is safe on your own network.
-3. Choose the event, choose the language (each has a flag), and press **▶**.
-4. When the translator starts speaking, it shows something like
-   "🇬🇧 Anna is translating for you".
+The automatic path currently supports Netcup. With any other provider, use the **Other / manual** option for a free Let's Encrypt certificate, or supply your own certificate via the **Own Certificate** tab. The manual option works with any DNS provider.
 
-That's the whole event. 🎉
+## Troubleshooting
 
----
-
-## Changing the list of languages
-
-1. Open the web address and add `/admin.html`.
-2. Log in, click **Languages** at the top.
-3. Add, remove, or edit languages. Your changes are saved automatically and stay even
-   after a restart.
-
----
-
-## If something goes wrong
-
-| Problem | What to do |
+| Symptom | Resolution |
 |---------|------------|
-| **A listener hears nothing** | Tap **▶** again. On iPhones, sound only starts after a tap — that's an Apple rule, not a bug. |
-| **The translator's microphone won't work** | Allow microphone access for the browser. **Mac:** System Settings ▸ Privacy ▸ Microphone. **Windows:** Settings ▸ Privacy & security ▸ Microphone. |
-| **A phone can't connect / shows a warning** | Accept the security warning (**Advanced ▸ proceed anyway**). It only appears the first time. |
-| **The sound keeps cutting out** | The Wi-Fi is overloaded. Use a cable between the host and the Wi-Fi router, and make sure the network can handle many people at once. |
-| **"Address already in use"** | Another program is using the website port. Close other web/streaming apps (on Windows, Skype is a common culprit) and start again. |
-| **Windows won't run the script** | Use `.\scripts\start.cmd` (note the `.cmd`). It's built to run without changing any Windows settings. |
+| A listener hears nothing | Tap play again. On iOS, audio only starts after a tap. |
+| The translator's microphone doesn't work | Allow microphone access for the browser. macOS: System Settings → Privacy & Security → Microphone. Windows: Settings → Privacy & security → Microphone. |
+| A device shows a security warning | Tap **Advanced → proceed anyway** (first connection only), or set up a trusted certificate (see *HTTPS and custom domain*). |
+| The Connection address shows "—" | The host is not on a usable network. Reconnect, click **Rescan**, and select the correct interface. |
+| "Firewall is blocking livekit-server" (macOS) | Use the banner's **Open Firewall settings**, allow incoming connections for `livekit-server`, then **Re-check**. The banner's info button explains the details. |
+| Audio drops out | The network is likely overloaded. Use Ethernet between the host and the router and ensure the network can handle the number of listeners. |
+| The host's IP changed and the domain stopped working | Update the A record to the new IP. With Netcup, open the **DNS** tab and click **Update A-record to this computer's IP**. |
 
-If you get stuck, the most reliable fix is to close the Terminal windows, then start again
-from **Step 2**.
+If a problem persists, quit Every Ear completely, reopen it, and run the event setup again.
 
----
+### Logs and data
 
-<details>
-<summary><strong>For technical users — details, testing, and advanced setup</strong> (click to expand)</summary>
+The Settings window's **Advanced** section can reveal the log folder, regenerate the internal LiveKit credentials, and reset all data (events, codes, languages, backgrounds, and credentials — this cannot be undone).
 
-### What it's built on
+Application data is stored at:
 
-Self-hosted live translation for large events. Translators stream audio from the browser,
-listeners open a website and press ▶︎ — no registration, no app. Target latency in LAN:
-< 300 ms.
+- **macOS:** `~/Library/Application Support/every-ear/`
+- **Windows:** `%APPDATA%\every-ear\`
 
-Stack: LiveKit (WebRTC-SFU) · Node + Fastify (tokens) · Vite + Vanilla TS (frontend) ·
-Caddy (HTTPS proxy). Runs on macOS and Windows 11 in the event LAN.
+## Development
 
-### Install notes
+### Architecture
 
-`install-windows.cmd` is a thin wrapper around `install-windows.ps1` that bypasses
-PowerShell's default execution policy, so no `Set-ExecutionPolicy` change is needed. The
-single UAC prompt registers the URL ACL for `https://+:443/` and opens Windows Firewall
-ports 443, 7881 (TCP), and 7882 (UDP).
+Every Ear is built on LiveKit (a WebRTC SFU) for media, a Node + Fastify backend for token issuance, a Vite + vanilla-TypeScript frontend, Caddy as the HTTPS proxy, and an Electron wrapper for the desktop application.
 
-The first time the backend boots, it seeds the language list from
-`LANGUAGES`/`LANGUAGE_NAMES`/`LANGUAGE_FLAGS` in `.env`. After that the list lives in
-`backend/data/languages.json` and the env vars are ignored.
+### Authentication
 
-### How auth works
+- **Listeners** receive an anonymous, subscribe-only JWT scoped to one event-and-language room.
+- **Translators** exchange a 6-digit code for a publish JWT scoped to one event/language, carrying their display name.
+- **Admin** access uses a bearer token derived from the admin password. Events, codes, languages, and uploaded backgrounds are stored in the application's data directory.
+- The LiveKit API key and secret remain on the server; the frontend only ever receives short-lived JWTs.
 
-- **Listeners**: backend anonymously issues a subscribe-only JWT for exactly one
-  event-and-language room.
-- **Translators**: 6-digit code → backend verifies and issues a publish JWT scoped to one
-  event/language with the translator's display name.
-- **Admin**: bearer token against `ADMIN_PASSWORD`. Codes, events, languages, and uploaded
-  backgrounds live under `backend/data/` (survives restarts).
-- LiveKit API key/secret stay on the server; the frontend only gets short-lived JWTs.
+### Building the desktop app
 
-### Distributing the Caddy root certificate (instead of clicking through the warning)
+```bash
+npm run install:all          # install backend/, frontend/, and desktop/ dependencies
+npm run desktop:dist:mac     # → desktop/dist/Every Ear-1.0.0-arm64.dmg + -x64.dmg
+npm run desktop:dist:win     # → desktop/dist/Every Ear-Setup-1.0.0.exe
+npm run desktop:dev          # build and launch Electron against the live source
+```
 
-- macOS: `cat ~/Library/Application\ Support/Caddy/pki/authorities/local/root.crt`
-- Windows: `%LOCALAPPDATA%\Caddy\pki\authorities\local\root.crt`
+The `dist:*` scripts download pinned LiveKit and Caddy binaries into `desktop/resources/bin/<os>/<arch>/` and bundle them as Electron extra-resources. Dev mode falls back to PATH-resolved `livekit-server` / `caddy`. Release builds are unsigned; add signing identities to `desktop/electron-builder.yml` to change that.
 
-### Testing latency / load
+### ACME / DNS-01 internals
+
+Certificates are obtained via the Let's Encrypt **DNS-01** challenge (`desktop/src/acme-manager.ts`). The challenge TXT record is written through a provider API (`desktop/src/netcup-dns.ts`), public resolvers (1.1.1.1 / 8.8.8.8) are polled until the record is visible, the challenge is completed, and `cert.pem` / `key.pem` are installed. `ensureARecord` updates the domain's A record to the host's current LAN IP. DNS-01 is used because it does not require the host to be publicly reachable.
+
+Adding another automated provider means implementing the same surface as `netcup-dns.ts` (login, add/remove TXT, ensure A) and wiring it into the settings UI; the propagation poller in `acme-manager.ts` is provider-agnostic.
+
+### Running from source
+
+Plain scripts run the stack directly (Vite hot-reload, tsx-watch backend, Caddy with `tls internal`):
+
+- macOS: `./scripts/install-mac.sh`, then `./scripts/start.sh` and `./scripts/show-url.sh`
+- Windows: `.\scripts\install-windows.cmd`, then `.\scripts\start.cmd` and `.\scripts\show-url.cmd`
+
+Set `ADMIN_PASSWORD` and the `LANGUAGES` / `LANGUAGE_NAMES` / `LANGUAGE_FLAGS` seed values in `.env`. After first boot, the language list is stored in `backend/data/languages.json` and the seed variables are ignored.
+
+For a static production frontend instead of the Vite dev server:
+
+```bash
+npm run build       # vite build for the frontend
+```
+
+Then serve `frontend/dist/` as Caddy's `root` and remove the `frontend` process from `Procfile` / `scripts/dev.mjs`.
+
+### Load testing
 
 ```bash
 livekit-cli load-test \
@@ -200,61 +185,8 @@ livekit-cli load-test \
   --room event-<id>-lang-en --subscribers 200 --duration 60s
 ```
 
-Target on M-series / modern Windows: < 30% CPU, smooth audio with 200+ subscribers.
-Bandwidth rule of thumb: 500 listeners × 50 kbit/s = 25 Mbit/s — use Ethernet between the
-host and the Wi-Fi access points.
+As a bandwidth estimate, 500 listeners at ~50 kbit/s is roughly 25 Mbit/s; use Ethernet between the host and the wireless access points.
 
-### Diagnosing a busy port
+## License
 
-- Windows: `Get-NetTCPConnection -LocalPort 443 -State Listen`
-- macOS: `lsof -nP -iTCP:443 -sTCP:LISTEN`
-- Windows "permission denied" on :443: re-run `install-windows.cmd` once to add the URL ACL
-  reservation, or run `start.cmd` from an elevated terminal.
-
-### Desktop App (.app / .exe)
-
-Every Ear can also be packaged as a tray-only desktop app for macOS and Windows 11. The app
-bundles `livekit-server`, the Node backend, the prebuilt frontend, and Caddy, opens a
-settings window on first launch, and otherwise lives in the menu bar / system tray.
-Listeners still connect via browser at `https://<auto-detected-ip>/`.
-
-```bash
-npm run install:all          # also installs desktop/
-npm run desktop:dist:mac     # → desktop/dist/Every Ear-0.1.0-arm64.dmg + -x64.dmg
-npm run desktop:dist:win     # → desktop/dist/Every Ear-Setup-0.1.0.exe
-npm run desktop:dev          # builds + launches Electron against the live source
-```
-
-The `dist:*` scripts download pinned LiveKit + Caddy binaries on demand into
-`desktop/resources/bin/<os>/<arch>/`. Dev mode falls back to PATH-resolved
-`livekit-server` / `caddy`.
-
-On first launch a one-time modal shows the auto-generated admin password — copy it. The
-settings window has three sections: *Connection* (listener URL, QR, network-interface
-picker), *Admin password* (change + save, backend restarts in ~2s), and *Advanced*
-(regenerate LiveKit credentials, reset all data, reveal the log folder).
-
-Where the data lives:
-- macOS: `~/Library/Application Support/every-ear/{config.json,data/,logs/}`
-- Windows: `%APPDATA%\every-ear\{config.json,data\,logs\}`
-
-**Unsigned-build caveats:** builds are not code-signed. macOS Gatekeeper refuses the first
-launch — right-click the app → Open. Windows SmartScreen warns — More info → Run anyway.
-Add signing identities to `desktop/electron-builder.yml` to remove these.
-
-### Development mode
-
-Vite hot-reload, tsx-watch for the backend, Caddy with `tls internal` — `./scripts/start.sh`
-(mac) / `.\scripts\start.cmd` (Windows) does everything at once. Code changes appear
-immediately in the browser.
-
-For production (static frontend instead of Vite dev):
-
-```bash
-npm run build       # at repo root — runs vite build for the frontend
-```
-
-Then rewrite the Caddyfile to serve `frontend/dist/` as `root` (instead of proxying to
-`:5173`), and remove the `frontend` process from the `Procfile` / `scripts/dev.mjs` list.
-
-</details>
+Released under the [MIT License](LICENSE).

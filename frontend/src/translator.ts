@@ -38,6 +38,9 @@ const $muteToggle = document.getElementById("mute-toggle") as HTMLLabelElement;
 const $mute = document.getElementById("mute") as HTMLInputElement;
 const $muteLabel = document.getElementById("mute-label") as HTMLSpanElement;
 const $status = document.getElementById("status") as HTMLDivElement;
+const $reloadPrompt = document.getElementById("reload-prompt") as HTMLDivElement;
+const $reloadPromptText = document.getElementById("reload-prompt-text") as HTMLParagraphElement;
+const $reloadNow = document.getElementById("reload-now") as HTMLButtonElement;
 const $level = document.getElementById("level") as HTMLDivElement;
 const $sourceLangLabel = document.getElementById("source-lang-label") as HTMLLabelElement;
 const $sourceLang = document.getElementById("source-lang") as HTMLSelectElement;
@@ -47,6 +50,10 @@ let room: Room | null = null;
 let track: LocalAudioTrack | null = null;
 let levelTimer: number | null = null;
 let micEnumerationToken = 0;
+// True while we are intentionally tearing down (stop / sign-out), so the
+// resulting Disconnected event isn't mistaken for a network failure.
+let expectDisconnect = false;
+let reloadScheduled = false;
 
 // AI captions for the human-translator path (self-STT of their own mic).
 let stt: SpeechToText | null = null;
@@ -118,22 +125,29 @@ function setChannelState(code: string, state: ChannelState, detail?: string) {
   el.textContent = detail ? `${state} — ${detail}` : state;
 }
 
-function setOnAir(state: "off" | "live" | "muted" | "reconnecting") {
+type OnAirState = "off" | "live" | "muted" | "reconnecting" | "error";
+
+function setOnAir(state: OnAirState) {
   if (state === "off") {
     $onAir.hidden = true;
+    $onAir.className = "on-air";
     return;
   }
   $onAir.hidden = false;
-  $onAir.classList.toggle("muted", state === "muted");
+  // One state class drives the colour so each situation is unmistakable.
+  $onAir.className = `on-air ${state}`;
   if (state === "live") {
-    $onAirHeadline.textContent = "On air";
-    $onAirSub.textContent = "You are live.";
+    $onAirHeadline.textContent = "🔊 ON AIR — you can be heard";
+    $onAirSub.textContent = "You are live. Listeners hear you right now.";
   } else if (state === "muted") {
-    $onAirHeadline.textContent = "Muted";
-    $onAirSub.textContent = "Listeners hear silence right now.";
+    $onAirHeadline.textContent = "🔇 Muted — nobody hears you";
+    $onAirSub.textContent = "Switch the toggle back on to be heard again.";
   } else if (state === "reconnecting") {
-    $onAirHeadline.textContent = "Reconnecting…";
-    $onAirSub.textContent = "Network glitch — hang on.";
+    $onAirHeadline.textContent = "⏳ Reconnecting…";
+    $onAirSub.textContent = "Network glitch — trying to restore your broadcast.";
+  } else if (state === "error") {
+    $onAirHeadline.textContent = "⚠️ Connection lost — you are NOT heard";
+    $onAirSub.textContent = "Trying to reconnect.";
   }
 }
 
@@ -333,6 +347,8 @@ function startLiveLevelMeter(t: LocalAudioTrack) {
 async function connect() {
   if (!grant) return;
   const deviceId = $mic.value || undefined;
+  expectDisconnect = false;
+  hideReloadPrompt();
   setButtonLoading($connect, true);
   setStatus("Connecting…");
 
@@ -356,12 +372,15 @@ async function connect() {
     room.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
       if (state === ConnectionState.Reconnecting) {
         setOnAir("reconnecting");
+        setStatus("Network glitch — reconnecting…", true);
       } else if (state === ConnectionState.Connected) {
         syncMuteState();
+        setStatus("");
       }
     });
     room.on(RoomEvent.Disconnected, () => {
-      teardownLive();
+      if (expectDisconnect) return;
+      handleNetworkError();
     });
 
     await room.connect(livekitUrl(), grant.token!);
@@ -414,6 +433,8 @@ function stopCaptions() {
 // AI operator: no listener audio track — transcribe the source mic and fan out
 // translated captions to every AI-language room.
 async function connectAi() {
+  expectDisconnect = false;
+  hideReloadPrompt();
   setButtonLoading($connect, true);
   setStatus("Connecting…");
   try {
@@ -436,6 +457,8 @@ async function connectAi() {
 }
 
 function teardownLive() {
+  // Mark the upcoming room.disconnect() as intentional.
+  expectDisconnect = true;
   stopLevelMeter();
   stopCaptions();
   if (operator) {
@@ -462,6 +485,56 @@ function teardownLive() {
   // Restart preview meter so the translator can see their mic level again.
   void startPreviewLevelMeter();
 }
+
+// ---- Network-error recovery ------------------------------------------------
+
+function scheduleReload(delayMs: number) {
+  if (reloadScheduled) return;
+  reloadScheduled = true;
+  window.setTimeout(() => location.reload(), delayMs);
+}
+
+function showReloadPrompt(text: string) {
+  $reloadPromptText.textContent = text;
+  $reloadPrompt.hidden = false;
+}
+
+function hideReloadPrompt() {
+  $reloadPrompt.hidden = true;
+}
+
+// An unexpected disconnect: LiveKit gave up reconnecting. Recover by reloading
+// the page when the network is available, otherwise ask the translator to
+// reload and auto-reload as soon as connectivity returns.
+function handleNetworkError() {
+  if (reloadScheduled) return;
+  setOnAir("error");
+  setBroadcastUI(false);
+  stopLevelMeter();
+  stopCaptions();
+  if (operator) {
+    void operator.stop();
+    operator = null;
+  }
+  if (track) {
+    track.stop();
+    track = null;
+  }
+  room = null;
+
+  if (navigator.onLine) {
+    setStatus("Connection lost — reloading to reconnect…", true);
+    scheduleReload(1500);
+  } else {
+    setStatus("You're offline — listeners can't hear you.", true);
+    showReloadPrompt(
+      "You appear to be offline. The page reloads automatically once you're back online — or tap Reload.",
+    );
+    window.addEventListener("online", () => scheduleReload(400), { once: true });
+  }
+}
+
+$reloadNow.addEventListener("click", () => location.reload());
 
 function signOut() {
   teardownLive();

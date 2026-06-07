@@ -1,6 +1,6 @@
 {
   "name": "every-ear",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Self-hosted live translation for events. Runs on macOS and Windows 11.",
   "scripts": {

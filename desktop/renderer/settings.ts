@@ -18,6 +18,7 @@ type StatusView = {
   version: string;
   logDir: string;
   isFirstRun: boolean;
+  currentIp: string | null;
   customDomain: string | null;
   customCertFile: string | null;
   customKeyFile: string | null;
@@ -45,6 +46,10 @@ declare global {
         netcupApiKey: string;
         netcupApiPassword: string;
       }) => Promise<StatusView>;
+      obtainCertificateManual: (opts: { domain: string }) => Promise<StatusView>;
+      onAcmeChallenge: (
+        cb: (challenge: { recordType: string; recordName: string; recordValue: string }) => void,
+      ) => () => void;
       updateDnsRecord: (opts: {
         domain: string;
         netcupCustomerId: string;
@@ -100,6 +105,18 @@ const els = {
   acmeStatus: $<HTMLSpanElement>("acme-status"),
   updateDns: $<HTMLButtonElement>("update-dns"),
   dnsStatus: $<HTMLSpanElement>("dns-status"),
+  dnsProvider: $<HTMLSelectElement>("dns-provider"),
+  acmeNetcup: $<HTMLDivElement>("acme-netcup"),
+  acmeManual: $<HTMLDivElement>("acme-manual"),
+  obtainCertManual: $<HTMLButtonElement>("obtain-cert-manual"),
+  acmeManualStatus: $<HTMLSpanElement>("acme-manual-status"),
+  manualTxtBox: $<HTMLDivElement>("manual-txt-box"),
+  manualAName: $<HTMLElement>("manual-a-name"),
+  manualAValue: $<HTMLElement>("manual-a-value"),
+  manualTxtName: $<HTMLElement>("manual-txt-name"),
+  manualTxtValue: $<HTMLElement>("manual-txt-value"),
+  dnsAName: $<HTMLElement>("dns-a-name"),
+  dnsAValue: $<HTMLElement>("dns-a-value"),
   saveHttps: $<HTMLButtonElement>("save-https"),
   clearHttps: $<HTMLButtonElement>("clear-https"),
   httpsStatus: $<HTMLSpanElement>("https-status"),
@@ -197,6 +214,7 @@ function applyStatus(s: StatusView): void {
   if (s.netcupCustomerId && !els.netcupCustomerId.value) els.netcupCustomerId.value = s.netcupCustomerId;
   if (s.netcupApiKey && !els.netcupApiKey.value) els.netcupApiKey.value = s.netcupApiKey;
   if (s.netcupApiPassword && !els.netcupApiPassword.value) els.netcupApiPassword.value = s.netcupApiPassword;
+  updateDnsDisplays();
 
   // Advanced details
   els.logPathHint.textContent = `Log files: ${s.logDir}`;
@@ -274,10 +292,22 @@ els.password.addEventListener("input", () => {
   setSaveStatus("");
 });
 
+// Neutral line-style eye / eye-off icons (Feather-style strokes).
+const EYE_ICON =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_ICON =
+  '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+function renderPasswordToggle(visible: boolean): void {
+  els.togglePassword.innerHTML = visible ? EYE_OFF_ICON : EYE_ICON;
+  els.togglePassword.setAttribute("aria-label", visible ? "Hide password" : "Show password");
+}
+renderPasswordToggle(false);
+
 els.togglePassword.addEventListener("click", () => {
-  const isHidden = els.password.type === "password";
-  els.password.type = isHidden ? "text" : "password";
-  els.togglePassword.setAttribute("aria-label", isHidden ? "Hide password" : "Show password");
+  const visible = els.password.type === "password";
+  els.password.type = visible ? "text" : "password";
+  renderPasswordToggle(visible);
 });
 
 els.copyPassword.addEventListener("click", () => {
@@ -317,6 +347,25 @@ function switchHttpsTab(tab: "manual" | "acme"): void {
 els.certTab.addEventListener("click", () => switchHttpsTab("manual"));
 els.acmeTab.addEventListener("click", () => switchHttpsTab("acme"));
 
+// ---- Sidebar navigation ----------------------------------------------------
+
+const navItems = Array.from(document.querySelectorAll<HTMLButtonElement>(".nav-item"));
+
+function switchTab(tab: string): void {
+  for (const item of navItems) {
+    item.classList.toggle("active", item.dataset.tab === tab);
+  }
+  for (const panel of document.querySelectorAll<HTMLElement>(".panel")) {
+    panel.hidden = panel.id !== `panel-${tab}`;
+  }
+}
+
+for (const item of navItems) {
+  item.addEventListener("click", () => {
+    if (item.dataset.tab) switchTab(item.dataset.tab);
+  });
+}
+
 function setAcmeStatus(text: string, kind: "info" | "ok" | "error" = "info") {
   els.acmeStatus.textContent = text;
   els.acmeStatus.className =
@@ -337,7 +386,7 @@ els.obtainCert.addEventListener("click", async () => {
 
   if (!domain) { setAcmeStatus("Please enter a domain first.", "error"); return; }
   if (!netcupCustomerId || !netcupApiKey || !netcupApiPassword) {
-    setAcmeStatus("All three Netcup fields are required.", "error");
+    setAcmeStatus("Enter your Netcup API access on the Netcup tab first.", "error");
     return;
   }
 
@@ -362,6 +411,77 @@ els.obtainCert.addEventListener("click", async () => {
     els.obtainCert.disabled = false;
   }
 });
+
+// ---- DNS provider switch + manual flow ------------------------------------
+
+function switchDnsProvider(provider: "netcup" | "manual"): void {
+  els.acmeNetcup.hidden = provider !== "netcup";
+  els.acmeManual.hidden = provider !== "manual";
+}
+
+els.dnsProvider.addEventListener("change", () => {
+  switchDnsProvider(els.dnsProvider.value === "manual" ? "manual" : "netcup");
+});
+
+// Reflect the typed domain + detected IP in every A-record guide (the manual
+// certificate flow on the Certificate tab and the spec on the DNS tab).
+function updateDnsDisplays(): void {
+  const name = els.customDomain.value.trim() || "events.example.com";
+  const value = lastStatus?.currentIp ?? "—";
+  els.manualAName.textContent = name;
+  els.manualAValue.textContent = value;
+  els.dnsAName.textContent = name;
+  els.dnsAValue.textContent = value;
+}
+
+els.customDomain.addEventListener("input", updateDnsDisplays);
+
+function setAcmeManualStatus(text: string, kind: "info" | "ok" | "error" = "info") {
+  els.acmeManualStatus.textContent = text;
+  els.acmeManualStatus.className =
+    kind === "error" ? "error" : kind === "ok" ? "ok muted" : "muted";
+}
+
+els.obtainCertManual.addEventListener("click", async () => {
+  const domain = els.customDomain.value.trim();
+  if (!domain) { setAcmeManualStatus("Please enter a domain first.", "error"); return; }
+
+  els.obtainCertManual.disabled = true;
+  els.manualTxtBox.hidden = true;
+  setAcmeManualStatus("Starting…");
+
+  const unsubProgress = window.everyEar.onAcmeProgress((msg) => setAcmeManualStatus(msg));
+  const unsubChallenge = window.everyEar.onAcmeChallenge((challenge) => {
+    els.manualTxtName.textContent = challenge.recordName;
+    els.manualTxtValue.textContent = challenge.recordValue;
+    els.manualTxtBox.hidden = false;
+  });
+  try {
+    const next = await window.everyEar.obtainCertificateManual({ domain });
+    applyStatus(next);
+    setAcmeManualStatus("Certificate installed. Caddy restarted. You can delete the TXT record now.", "ok");
+  } catch (err) {
+    setAcmeManualStatus(describeError(err, "Failed."), "error");
+  } finally {
+    unsubProgress();
+    unsubChallenge();
+    els.obtainCertManual.disabled = false;
+  }
+});
+
+// Copy buttons inside the manual DNS-record boxes.
+for (const btn of document.querySelectorAll<HTMLButtonElement>(".copy-record")) {
+  btn.addEventListener("click", () => {
+    const targetId = btn.dataset.copy;
+    if (!targetId) return;
+    const value = document.getElementById(targetId)?.textContent?.trim();
+    if (!value || value === "—") return;
+    void window.everyEar.copyToClipboard(value);
+    const original = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = original; }, 1200);
+  });
+}
 
 function setDnsStatus(text: string, kind: "info" | "ok" | "error" = "info") {
   els.dnsStatus.textContent = text;

@@ -31,6 +31,7 @@ import {
   validLanguage,
 } from "./languages.js";
 import { loadAiConfig, updateAiConfig, maskKey } from "./ai/config.js";
+import { statsForRoom } from "./stats.js";
 
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -175,6 +176,28 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     // Make sure there's always at least one event for the admin UI to land on.
     await ensureDefaultEvent();
     return { events: await listEvents() };
+  });
+
+  // Per-channel statistics for one event: a row per language (manual + AI).
+  app.get<{ Params: { id: string } }>("/events/:id/stats", async (req, reply) => {
+    const event = await getEvent(req.params.id);
+    if (!event) return reply.code(404).send({ error: "not found" });
+    const languages = [
+      ...event.languages.map((code) => ({ code, ai: false })),
+      ...(event.aiLanguages ?? []).map((code) => ({ code, ai: true })),
+    ];
+    // Aggregate the per-bucket concurrent-listener history across every channel
+    // into one series for the event-level chart.
+    const buckets = new Map<number, number>();
+    const channels = languages.map(({ code, ai }) => {
+      const { history, ...rest } = statsForRoom(config.roomFor(event.id, code));
+      for (const p of history) buckets.set(p.t, (buckets.get(p.t) ?? 0) + p.n);
+      return { language: code, ai, ...rest };
+    });
+    const history = [...buckets.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([t, n]) => ({ t, n }));
+    return { channels, history };
   });
 
   app.post<{

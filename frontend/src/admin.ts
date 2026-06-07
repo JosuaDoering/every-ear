@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import { renderPoster, type WifiAuth } from "./poster.js";
 import { fetchLanguages, type Language } from "./livekit.js";
 import { loadAdminToken, clearAdminToken } from "./session.js";
 import { toast, confirmDialog, setButtonLoading, inlineEdit } from "./ui.js";
@@ -32,6 +33,8 @@ const $detailLanguages = document.getElementById("detail-languages") as HTMLDivE
 const $detailAiLanguages = document.getElementById("detail-ai-languages") as HTMLDivElement;
 const $detailAiSource = document.getElementById("detail-ai-source") as HTMLSelectElement;
 const $detailSaveLangs = document.getElementById("detail-save-langs") as HTMLButtonElement;
+const $detailStats = document.getElementById("detail-stats") as HTMLDivElement;
+const $detailHistory = document.getElementById("detail-history") as HTMLDivElement;
 const $detailBgPreview = document.getElementById("detail-bg-preview") as HTMLDivElement;
 const $detailBgForm = document.getElementById("detail-bg-form") as HTMLFormElement;
 const $detailBgFile = document.getElementById("detail-bg-file") as HTMLInputElement;
@@ -50,6 +53,10 @@ const $codeList = document.getElementById("code-list") as HTMLDivElement;
 const $aiCodeForm = document.getElementById("ai-code-form") as HTMLFormElement;
 const $aiCodeName = document.getElementById("ai-code-name") as HTMLInputElement;
 const $aiCodeSubmit = document.getElementById("ai-code-submit") as HTMLButtonElement;
+const $codeAddBtn = document.getElementById("code-add-btn") as HTMLButtonElement;
+const $codeAddMenu = document.getElementById("code-add-menu") as HTMLDivElement;
+const $codeAddTranslator = document.getElementById("code-add-translator") as HTMLButtonElement;
+const $codeAddAi = document.getElementById("code-add-ai") as HTMLButtonElement;
 
 // AI settings modal.
 const $openAiSettings = document.getElementById("open-ai-settings") as HTMLButtonElement;
@@ -79,6 +86,22 @@ const $qrTranslatorUrl = document.getElementById("qr-translator-url") as HTMLEle
 const $copyListener   = document.getElementById("copy-listener")   as HTMLButtonElement;
 const $copyTranslator = document.getElementById("copy-translator") as HTMLButtonElement;
 
+// Connection poster.
+const $wifiSsid          = document.getElementById("wifi-ssid")          as HTMLInputElement;
+const $wifiAuth          = document.getElementById("wifi-auth")          as HTMLSelectElement;
+const $wifiPasswordLabel = document.getElementById("wifi-password-label") as HTMLLabelElement;
+const $wifiPassword      = document.getElementById("wifi-password")      as HTMLInputElement;
+const $wifiPasswordToggle = document.getElementById("wifi-password-toggle") as HTMLButtonElement;
+const $wifiHidden        = document.getElementById("wifi-hidden")        as HTMLInputElement;
+const $posterListener    = document.getElementById("poster-listener")    as HTMLButtonElement;
+const $posterTranslator  = document.getElementById("poster-translator")  as HTMLButtonElement;
+const $posterStatus      = document.getElementById("poster-status")      as HTMLSpanElement;
+const $posterPreview     = document.getElementById("poster-preview")     as HTMLDivElement;
+const $posterCanvas      = document.getElementById("poster-canvas")      as HTMLCanvasElement;
+const $posterActions     = document.getElementById("poster-actions")     as HTMLDivElement;
+const $downloadPoster    = document.getElementById("download-poster")    as HTMLButtonElement;
+const $copyPoster        = document.getElementById("copy-poster")        as HTMLButtonElement;
+
 // Default-background block.
 const $bgForm = document.getElementById("bg-form") as HTMLFormElement;
 const $bgFile = document.getElementById("bg-file") as HTMLInputElement;
@@ -107,10 +130,21 @@ type CodeEntry = {
   lastUsedAt?: string;
 };
 
+type ChannelStat = {
+  language: string;
+  ai: boolean;
+  activeListeners: number;
+  listeners24h: number;
+  broadcastSeconds: number;
+};
+
+type HistoryPoint = { t: number; n: number };
+
 let languages: Language[] = [];
 let events: EventEntry[] = [];
 let codeCounts = new Map<string, number>();
 let openEditEventId: string | null = null;
+let statsTimer: number | null = null;
 
 function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
@@ -403,10 +437,18 @@ function openEditEventModal(id: string) {
   openEditEventId = id;
   renderEditEventModal();
   openModalEl($eventModal);
+  // Keep "active now" fresh while the modal is open.
+  void refreshChannelStats();
+  if (statsTimer) clearInterval(statsTimer);
+  statsTimer = window.setInterval(() => void refreshChannelStats(), 10_000);
 }
 
 function closeEditEventModal() {
   openEditEventId = null;
+  if (statsTimer) {
+    clearInterval(statsTimer);
+    statsTimer = null;
+  }
   closeModalEl($eventModal);
 }
 
@@ -453,6 +495,7 @@ function renderEditEventModal() {
   applyExclusion();
   refreshDetailBackground();
   renderCodeLanguageOptions(ev);
+  resetCodeAdd();
   void refreshCodes();
 
   const isActive = ev.active !== false;
@@ -543,6 +586,178 @@ function renderCodes(codes: CodeEntry[]) {
     row.appendChild(meta);
     row.appendChild(revoke);
     $codeList.appendChild(row);
+  }
+}
+
+// ---- Channel statistics ----------------------------------------------------
+
+function formatBroadcast(seconds: number): string {
+  if (seconds <= 0) return "none yet";
+  if (seconds < 60) return `${seconds}s`;
+  const totalMin = Math.floor(seconds / 60);
+  if (totalMin < 60) return `${totalMin} min`;
+  const h = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return min ? `${h} h ${min} min` : `${h} h`;
+}
+
+async function refreshChannelStats() {
+  const ev = currentEditEvent();
+  if (!ev) return;
+  const res = await authedFetch(
+    `/api/admin/events/${encodeURIComponent(ev.id)}/stats`,
+  );
+  if (res.status === 401) return signOut();
+  if (!res.ok) {
+    $detailStats.innerHTML = `<div class="empty">Statistics unavailable (HTTP ${res.status}).</div>`;
+    return;
+  }
+  // Guard against a late response after the modal moved to another event.
+  if (currentEditEvent()?.id !== ev.id) return;
+  const data = (await res.json()) as {
+    channels: ChannelStat[];
+    history: HistoryPoint[];
+  };
+  renderChannelStats(data.channels);
+  renderHistoryChart(data.history ?? []);
+}
+
+// ---- Concurrent-listener history chart -------------------------------------
+
+const HISTORY_BUCKET_MS = 5 * 60 * 1000;
+const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// Draw a small SVG line chart of peak concurrent listeners over the last 24 h.
+// The backend series only has buckets for times it was polling, so we fill the
+// full window at 5-minute steps (missing buckets = 0) for a continuous line.
+// Hovering reveals the exact listener count and time at the nearest bucket.
+function renderHistoryChart(history: HistoryPoint[]) {
+  const now = Date.now();
+  const startBucket =
+    Math.floor((now - HISTORY_WINDOW_MS) / HISTORY_BUCKET_MS) * HISTORY_BUCKET_MS;
+  const byBucket = new Map(history.map((p) => [p.t, p.n]));
+
+  const series: HistoryPoint[] = [];
+  for (let t = startBucket; t <= now; t += HISTORY_BUCKET_MS) {
+    series.push({ t, n: byBucket.get(t) ?? 0 });
+  }
+
+  const peak = Math.max(0, ...series.map((p) => p.n));
+  if (peak === 0) {
+    // Nothing worth charting yet — keep the panel uncluttered.
+    $detailHistory.hidden = true;
+    $detailHistory.innerHTML = "";
+    return;
+  }
+
+  const W = 600;
+  const H = 140;
+  const padY = 10;
+  const maxN = Math.max(1, peak);
+  const stepX = W / Math.max(1, series.length - 1);
+  const coords = series.map((p, i) => {
+    const x = i * stepX;
+    const y = H - padY - (p.n / maxN) * (H - 2 * padY);
+    return [x, y] as const;
+  });
+  const line = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const first = coords[0]?.[0] ?? 0;
+  const last = coords[coords.length - 1]?.[0] ?? W;
+  const area = `${first.toFixed(1)},${H} ${line} ${last.toFixed(1)},${H}`;
+
+  $detailHistory.hidden = false;
+  $detailHistory.innerHTML = `
+    <div class="chart-head">
+      <span class="chart-title">Concurrent listeners · last 24 h</span>
+      <span class="chart-peak">peak ${peak}</span>
+    </div>
+    <div class="chart-plot">
+      <svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+        <polygon class="chart-area" points="${area}"></polygon>
+        <polyline class="chart-line" points="${line}"></polyline>
+      </svg>
+      <div class="chart-cursor" hidden></div>
+      <div class="chart-dot" hidden></div>
+      <div class="chart-tooltip" hidden></div>
+    </div>
+    <div class="chart-axis"><span>24 h ago</span><span>now</span></div>`;
+
+  // Hover read-out: map the cursor's x to the nearest 5-minute bucket and show
+  // that bucket's exact listener count and timestamp.
+  const plot = $detailHistory.querySelector<HTMLDivElement>(".chart-plot")!;
+  const cursor = plot.querySelector<HTMLDivElement>(".chart-cursor")!;
+  const dot = plot.querySelector<HTMLDivElement>(".chart-dot")!;
+  const tip = plot.querySelector<HTMLDivElement>(".chart-tooltip")!;
+
+  const onMove = (clientX: number) => {
+    const rect = plot.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    const i = Math.round(frac * (series.length - 1));
+    const p = series[i];
+    const c = coords[i];
+    if (!p || !c) return;
+    const px = (c[0] / W) * rect.width;
+    const py = (c[1] / H) * rect.height;
+
+    cursor.style.left = `${px}px`;
+    cursor.hidden = false;
+    dot.style.left = `${px}px`;
+    dot.style.top = `${py}px`;
+    dot.hidden = false;
+
+    const when = new Date(p.t).toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    tip.innerHTML = `<strong>${p.n}</strong> listener${p.n === 1 ? "" : "s"}<span>${when}</span>`;
+    // Clamp the tooltip so it never spills past the chart edges.
+    const half = tip.offsetWidth / 2;
+    tip.style.left = `${Math.min(rect.width - half, Math.max(half, px))}px`;
+    tip.hidden = false;
+  };
+
+  const hide = () => {
+    cursor.hidden = true;
+    dot.hidden = true;
+    tip.hidden = true;
+  };
+
+  plot.addEventListener("mousemove", (e) => onMove(e.clientX));
+  plot.addEventListener("mouseleave", hide);
+  plot.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    if (t) onMove(t.clientX);
+  });
+  plot.addEventListener("touchend", hide);
+}
+
+function renderChannelStats(channels: ChannelStat[]) {
+  $detailStats.innerHTML = "";
+  if (channels.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No language channels for this event yet.";
+    $detailStats.appendChild(empty);
+    return;
+  }
+  for (const c of channels) {
+    const lang = languages.find((l) => l.code === c.language);
+    const row = document.createElement("div");
+    row.className = "stat-row";
+    const label = `${lang?.flag ?? "🏳️"} ${escapeHtml(
+      lang?.name ?? c.language.toUpperCase(),
+    )}${c.ai ? ' <span class="ai-pill">🤖 AI</span>' : ""}`;
+    row.innerHTML = `
+      <div class="stat-channel">${label}</div>
+      <div class="stat-metrics">
+        <span class="stat-metric"><strong>${c.activeListeners}</strong><span class="stat-metric-label">active now</span></span>
+        <span class="stat-metric"><strong>${c.listeners24h}</strong><span class="stat-metric-label">last 24 h</span></span>
+        <span class="stat-metric"><strong>${formatBroadcast(c.broadcastSeconds)}</strong><span class="stat-metric-label">broadcast</span></span>
+      </div>`;
+    $detailStats.appendChild(row);
   }
 }
 
@@ -693,6 +908,49 @@ $detailDelete.addEventListener("click", async () => {
   toast(`Event "${ev.name}" deleted.`, "success");
   closeEditEventModal();
   await refreshAll();
+});
+
+// ---- "Add code" dropdown ---------------------------------------------------
+// Collapses the two generators behind one ＋ button so the panel stays tidy.
+
+function closeCodeAddMenu() {
+  $codeAddMenu.hidden = true;
+  $codeAddBtn.setAttribute("aria-expanded", "false");
+}
+
+// Reset to the collapsed state: both forms hidden, menu closed.
+function resetCodeAdd() {
+  $codeForm.hidden = true;
+  $aiCodeForm.hidden = true;
+  closeCodeAddMenu();
+}
+
+$codeAddBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const willOpen = $codeAddMenu.hidden;
+  $codeAddMenu.hidden = !willOpen;
+  $codeAddBtn.setAttribute("aria-expanded", String(willOpen));
+});
+
+$codeAddTranslator.addEventListener("click", () => {
+  $aiCodeForm.hidden = true;
+  $codeForm.hidden = false;
+  closeCodeAddMenu();
+  $codeName.focus();
+});
+
+$codeAddAi.addEventListener("click", () => {
+  $codeForm.hidden = true;
+  $aiCodeForm.hidden = false;
+  closeCodeAddMenu();
+  $aiCodeName.focus();
+});
+
+// Close the menu on any outside click.
+document.addEventListener("click", (e) => {
+  if (!$codeAddMenu.hidden && !$codeAddMenu.contains(e.target as Node)) {
+    closeCodeAddMenu();
+  }
 });
 
 $codeForm.addEventListener("submit", async (e) => {
@@ -1099,6 +1357,148 @@ $bgReset.addEventListener("click", async () => {
   $copyTranslator.addEventListener("click", () => {
     void navigator.clipboard.writeText(translatorUrl)
       .then(() => toast("Translator URL copied.", "success"));
+  });
+})();
+
+// ---- Connection poster ----------------------------------------------------
+
+(function setupPoster() {
+  const STORAGE_KEY = "every-ear:wifi";
+  const EYE =
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF =
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+  function syncAuthUi(): void {
+    $wifiPasswordLabel.hidden = $wifiAuth.value === "nopass";
+  }
+
+  // Restore previously entered Wi-Fi from this browser.
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as {
+      ssid?: string;
+      auth?: WifiAuth;
+      password?: string;
+      hidden?: boolean;
+    } | null;
+    if (saved) {
+      $wifiSsid.value = saved.ssid ?? "";
+      $wifiAuth.value = saved.auth ?? "WPA";
+      $wifiPassword.value = saved.password ?? "";
+      $wifiHidden.checked = !!saved.hidden;
+    }
+  } catch {
+    /* ignore malformed storage */
+  }
+
+  $wifiPasswordToggle.innerHTML = EYE;
+  syncAuthUi();
+  $wifiAuth.addEventListener("change", syncAuthUi);
+
+  $wifiPasswordToggle.addEventListener("click", () => {
+    const reveal = $wifiPassword.type === "password";
+    $wifiPassword.type = reveal ? "text" : "password";
+    $wifiPasswordToggle.innerHTML = reveal ? EYE_OFF : EYE;
+    $wifiPasswordToggle.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+  });
+
+  // Which poster is currently shown — drives the download filename.
+  let currentTarget: "listener" | "translator" = "listener";
+
+  function slug(): string {
+    const net = ($wifiSsid.value.trim() || "every-ear")
+      .replace(/[^a-z0-9]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase();
+    return `${currentTarget}-${net}`;
+  }
+
+  // The two posters differ only in the second QR column: the listener page or
+  // the translator login. The Wi-Fi column and headline are shared.
+  const TARGETS = {
+    listener: {
+      url: window.location.origin + "/",
+      heading: "Listen live",
+      instruction: "Scan, pick your language, press play.",
+      button: $posterListener,
+    },
+    translator: {
+      url: window.location.origin + "/translator-login.html",
+      heading: "Translator login",
+      instruction: "Scan to log in and broadcast a language.",
+      button: $posterTranslator,
+    },
+  } as const;
+
+  async function showPoster(which: "listener" | "translator"): Promise<void> {
+    const ssid = $wifiSsid.value.trim();
+    const auth = $wifiAuth.value as WifiAuth;
+    const password = $wifiPassword.value;
+    const hidden = $wifiHidden.checked;
+
+    if (!ssid) {
+      toast("Enter the Wi-Fi network name first.", "error");
+      $wifiSsid.focus();
+      return;
+    }
+    if (auth !== "nopass" && !password) {
+      toast("Enter the Wi-Fi password, or choose “Open — no password”.", "error");
+      return;
+    }
+
+    const t = TARGETS[which];
+    currentTarget = which;
+    setButtonLoading(t.button, true);
+    $posterStatus.textContent = "Generating…";
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ssid, auth, password: auth === "nopass" ? "" : password, hidden }),
+      );
+      await renderPoster($posterCanvas, {
+        title: "Live Translation",
+        target: { url: t.url, heading: t.heading, instruction: t.instruction },
+        wifi: { ssid, password, auth, hidden },
+      });
+      $posterPreview.hidden = false;
+      $posterActions.hidden = false;
+      $posterStatus.textContent = "";
+      $posterPreview.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      toast("Poster ready.", "success");
+    } catch (err) {
+      $posterStatus.textContent = "";
+      toast(err instanceof Error ? err.message : "Could not generate the poster.", "error");
+    } finally {
+      setButtonLoading(t.button, false);
+    }
+  }
+
+  $posterListener.addEventListener("click", () => void showPoster("listener"));
+  $posterTranslator.addEventListener("click", () => void showPoster("translator"));
+
+  $downloadPoster.addEventListener("click", () => {
+    $posterCanvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `every-ear-poster-${slug()}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  });
+
+  $copyPoster.addEventListener("click", async () => {
+    try {
+      const blob = await new Promise<Blob | null>((res) =>
+        $posterCanvas.toBlob(res, "image/png"),
+      );
+      if (!blob) throw new Error("no image");
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      toast("Poster copied to clipboard.", "success");
+    } catch {
+      toast("Copy isn't supported here — use Download instead.", "error");
+    }
   });
 })();
 

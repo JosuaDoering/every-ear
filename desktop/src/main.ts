@@ -52,7 +52,6 @@ app.whenReady().then(async () => {
   firstRunPending = isFirstRun;
 
   await detectAndStart();
-  void syncNetcupARecord();
   void firewallCheck.refresh().then(() => broadcastStatus());
   startWatcher();
 
@@ -138,6 +137,26 @@ app.whenReady().then(async () => {
             );
           }
         }
+        await restartStack();
+        broadcastStatus();
+        tray.refresh();
+        return buildStatus();
+      },
+      obtainCertificateManual: async (opts) => {
+        // Provider-agnostic issuance: the user creates the TXT record by hand at
+        // whatever DNS host they use; we surface it and poll until it appears.
+        const { certFile, keyFile } = await acmeManager.obtainCertificateManual(
+          opts.domain,
+          (msg) => settingsWindow.broadcastAcmeProgress(msg),
+          (challenge) => settingsWindow.broadcastAcmeChallenge(challenge),
+        );
+        updateConfig({
+          customDomain: opts.domain || null,
+          customCertFile: certFile,
+          customKeyFile: keyFile,
+        });
+        // The A record is the user's responsibility in manual mode — we have no
+        // provider API to set it, so leave any stored Netcup creds untouched.
         await restartStack();
         broadcastStatus();
         tray.refresh();
@@ -286,35 +305,6 @@ async function restartStack(): Promise<void> {
   tray.refresh();
 }
 
-async function syncNetcupARecord(): Promise<void> {
-  const cfg = loadConfig();
-  if (!cfg?.customDomain || !currentCandidate) return;
-  if (!cfg.netcupCustomerId || !cfg.netcupApiKey || !cfg.netcupApiPassword) return;
-  try {
-    const result = await netcupDns.ensureARecord(
-      cfg.customDomain,
-      currentCandidate.address,
-      {
-        customerId: cfg.netcupCustomerId,
-        apiKey: cfg.netcupApiKey,
-        apiPassword: cfg.netcupApiPassword,
-      },
-    );
-    if (result.changed) {
-      showNotification(
-        `DNS updated: ${cfg.customDomain} → ${currentCandidate.address}${
-          result.previousIp ? ` (was ${result.previousIp})` : ""
-        }`,
-      );
-    }
-  } catch (err) {
-    console.error("[main] Netcup A record sync failed:", err);
-    showNotification(
-      `Netcup DNS update failed: ${err instanceof Error ? err.message : err}`,
-    );
-  }
-}
-
 async function wipeAllData(): Promise<void> {
   await supervisor.stop();
   rmSync(dataDir(), { recursive: true, force: true });
@@ -370,7 +360,8 @@ function startWatcher(): void {
     ) {
       currentCandidate = next;
       await restartStack();
-      void syncNetcupARecord();
+      // The Netcup A record is intentionally NOT auto-updated here — the user
+      // updates it explicitly via the "Update A-record" button in settings.
       showNotification(
         `Network changed — listeners now connect to https://${withPort(next.address)}/`,
       );
@@ -413,6 +404,7 @@ async function buildStatus(): Promise<StatusView> {
     livekitApiKey: cfg.livekitApiKey,
     candidates,
     currentInterface: currentCandidate?.iface ?? null,
+    currentIp: currentCandidate?.address ?? null,
     supervisorStatus: supervisor.status(),
     version: app.getVersion(),
     logDir: logDir(),

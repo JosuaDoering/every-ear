@@ -8,145 +8,302 @@
     <link rel="stylesheet" href="./settings.css" />
   </head>
   <body>
-    <main>
-      <header class="page-header">
-        <h1>Every Ear</h1>
-        <span id="status-pill" class="status-pill">Starting…</span>
-      </header>
+    <div class="layout">
+      <nav class="sidebar">
+        <div class="sidebar-head">
+          <h1>Every Ear</h1>
+          <span id="status-pill" class="status-pill">Starting…</span>
+        </div>
+        <div class="nav-items" role="tablist">
+          <button class="nav-item active" type="button" data-tab="connection" role="tab">Connection</button>
+          <button class="nav-item" type="button" data-tab="password" role="tab">Password</button>
+          <button class="nav-item" type="button" data-tab="certificate" role="tab">Certificate</button>
+          <button class="nav-item" type="button" data-tab="dns" role="tab">DNS</button>
+          <button class="nav-item" type="button" data-tab="netcup" role="tab">Netcup</button>
+          <button class="nav-item" type="button" data-tab="advanced" role="tab">Advanced</button>
+        </div>
+        <span id="version-hint" class="sidebar-version"></span>
+      </nav>
 
-      <div id="firewall-banner" class="firewall-banner" hidden>
-        <div class="firewall-banner-icon">⚠</div>
-        <div class="firewall-banner-body">
-          <div class="firewall-banner-title">
-            <strong>Firewall is blocking livekit-server</strong>
-            <button id="firewall-info" class="info-btn" type="button" aria-label="Why am I seeing this?" title="Why am I seeing this?">i</button>
-          </div>
-          <p id="firewall-banner-msg" class="hint"></p>
-          <code id="firewall-banner-path" class="firewall-binary"></code>
-          <div class="row">
-            <button id="firewall-open" class="primary small" type="button">Open Firewall settings</button>
-            <button id="firewall-recheck" class="ghost small" type="button">Re-check</button>
+      <main class="content">
+        <div id="firewall-banner" class="firewall-banner" hidden>
+          <div class="firewall-banner-icon">⚠</div>
+          <div class="firewall-banner-body">
+            <div class="firewall-banner-title">
+              <strong>Firewall is blocking livekit-server</strong>
+              <button id="firewall-info" class="info-btn" type="button" aria-label="Why am I seeing this?" title="Why am I seeing this?">i</button>
+            </div>
+            <p id="firewall-banner-msg" class="hint"></p>
+            <code id="firewall-banner-path" class="firewall-binary"></code>
+            <div class="row">
+              <button id="firewall-open" class="primary small" type="button">Open Firewall settings</button>
+              <button id="firewall-recheck" class="ghost small" type="button">Re-check</button>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Connection -->
-      <section class="card" id="connection-card">
-        <h2>Connection</h2>
-        <p class="hint">
-          Listeners and translators connect through this URL while on the same network.
-        </p>
-
-        <div id="url-row" class="url-row">
-          <code id="listener-url" class="url">—</code>
-          <button id="copy-url" class="ghost small" type="button">Copy</button>
-          <button id="open-admin" class="ghost small" type="button">Open admin</button>
-        </div>
-
-        <p id="no-lan" class="hint" hidden>
-          No usable network interface detected — listeners can't connect until the
-          machine is back on a LAN. Use “Rescan” after reconnecting.
-        </p>
-
-        <div id="iface-row" class="iface-row" hidden>
-          <label>
-            Network interface
-            <select id="iface-select"></select>
-          </label>
-          <button id="refresh-lan" class="ghost small" type="button">Rescan</button>
+        <!-- Connection -->
+        <section class="card panel active" id="panel-connection">
+          <h2>Connection</h2>
           <p class="hint">
-            Pick the interface listeners share with you. Auto selects the OS default route.
+            Listeners and translators connect through this URL while on the same network.
           </p>
-        </div>
-      </section>
 
-      <!-- Admin password -->
-      <section class="card">
-        <h2>Admin Password</h2>
-        <p class="hint">
-          Enter this on <code>/admin.html</code> to manage events, languages, and translator codes.
-        </p>
-        <div class="password-row">
-          <input id="admin-password" type="password" autocomplete="off" />
-          <button id="toggle-password" class="ghost small" type="button" aria-label="Show password">👁</button>
-          <button id="copy-password" class="ghost small" type="button">Copy</button>
-        </div>
-        <div class="row">
-          <button id="save-password" class="primary" type="button">Save password</button>
-          <span id="save-status" class="muted"></span>
-        </div>
-      </section>
+          <div id="url-row" class="url-row">
+            <code id="listener-url" class="url">—</code>
+            <button id="copy-url" class="ghost small" type="button">Copy</button>
+            <button id="open-admin" class="ghost small" type="button">Open admin</button>
+          </div>
 
-      <!-- HTTPS & Domain -->
-      <section class="card" id="https-card">
-        <h2>HTTPS &amp; Domain</h2>
-        <p class="hint">
-          By default Every Ear uses a self-signed certificate — listeners accept it once per device.
-          Optionally point a real domain here and supply a certificate.
-        </p>
+          <p id="no-lan" class="hint" hidden>
+            No usable network interface detected — listeners can't connect until the
+            machine is back on a LAN. Use “Rescan” after reconnecting.
+          </p>
 
-        <div class="field-group">
-          <label class="field-label" for="custom-domain">
-            Domain <span class="optional">optional</span>
-          </label>
-          <input
-            id="custom-domain"
-            type="text"
-            placeholder="events.example.com"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <p class="hint">Caddy listens on this hostname. DNS must point to this machine.</p>
-        </div>
-
-        <!-- Tab bar -->
-        <div class="tab-bar">
-          <button id="cert-tab" class="tab active" type="button">Own Certificate</button>
-          <button id="acme-tab" class="tab" type="button">Let's Encrypt</button>
-        </div>
-
-        <!-- Own Certificate panel -->
-        <div id="tab-manual" class="tab-panel">
-          <div class="field-group">
-            <label class="field-label">
-              Certificate file <span class="optional">optional</span>
+          <div id="iface-row" class="iface-row" hidden>
+            <label>
+              Network interface
+              <select id="iface-select"></select>
             </label>
-            <div class="file-pick-row">
-              <input id="cert-file" type="text" readonly placeholder="No file chosen" />
-              <button id="pick-cert" class="ghost small" type="button">Browse…</button>
-            </div>
-            <p class="hint">PEM-encoded certificate (cert.pem). Leave empty to use the internal CA.</p>
+            <button id="refresh-lan" class="ghost small" type="button">Rescan</button>
+            <p class="hint">
+              Pick the interface listeners share with you. Auto selects the OS default route.
+            </p>
           </div>
+        </section>
 
-          <div class="field-group">
-            <label class="field-label">
-              Private key <span class="optional">optional</span>
-            </label>
-            <div class="file-pick-row">
-              <input id="key-file" type="text" readonly placeholder="No file chosen" />
-              <button id="pick-key" class="ghost small" type="button">Browse…</button>
-            </div>
-            <p class="hint">PEM-encoded private key (key.pem). Required when a certificate is set.</p>
-          </div>
-
-          <div class="row">
-            <button id="save-https" class="primary" type="button">Save &amp; restart</button>
-            <span id="https-status" class="muted"></span>
-          </div>
-        </div>
-
-        <!-- Let's Encrypt panel -->
-        <div id="tab-acme" class="tab-panel" hidden>
+        <!-- Admin password -->
+        <section class="card panel" id="panel-password" hidden>
+          <h2>Admin Password</h2>
           <p class="hint">
-            Let's Encrypt issues a free, trusted certificate — no browser warning for listeners.
-            The app uses the Netcup DNS API to set and remove the required TXT record automatically.
-            Credentials are saved after the first successful run.
+            Enter this on <code>/admin.html</code> to manage events, languages, and translator codes.
+          </p>
+          <div class="password-row">
+            <input id="admin-password" type="password" autocomplete="off" />
+            <button id="toggle-password" class="ghost small icon-btn" type="button" aria-label="Show password"></button>
+            <button id="copy-password" class="ghost small" type="button">Copy</button>
+          </div>
+          <div class="row">
+            <button id="save-password" class="primary" type="button">Save password</button>
+            <span id="save-status" class="muted"></span>
+          </div>
+        </section>
+
+        <!-- Certificate -->
+        <section class="card panel" id="panel-certificate" hidden>
+          <h2>Certificate</h2>
+          <p class="hint">
+            How listeners' connection is secured. By default Every Ear uses a self-signed
+            certificate — phones accept it once per device. For a warning-free experience,
+            use a real domain plus a trusted certificate below.
           </p>
 
           <div class="field-group">
-            <label class="field-label" for="netcup-customer-id">Netcup Customer ID</label>
+            <label class="field-label" for="custom-domain">
+              Domain <span class="optional">optional</span>
+            </label>
+            <input
+              id="custom-domain"
+              type="text"
+              placeholder="events.example.com"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p class="hint">
+              Caddy serves listeners on this hostname. Point its DNS A record at this
+              machine on the <strong>DNS</strong> tab.
+            </p>
+          </div>
+
+          <!-- Tab bar -->
+          <div class="tab-bar">
+            <button id="cert-tab" class="tab active" type="button">Own Certificate</button>
+            <button id="acme-tab" class="tab" type="button">Let's Encrypt</button>
+          </div>
+
+          <!-- Own Certificate panel -->
+          <div id="tab-manual" class="tab-panel">
+            <div class="field-group">
+              <label class="field-label">
+                Certificate file <span class="optional">optional</span>
+              </label>
+              <div class="file-pick-row">
+                <input id="cert-file" type="text" readonly placeholder="No file chosen" />
+                <button id="pick-cert" class="ghost small" type="button">Browse…</button>
+              </div>
+              <p class="hint">PEM-encoded certificate (cert.pem). Leave empty to use the internal CA.</p>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label">
+                Private key <span class="optional">optional</span>
+              </label>
+              <div class="file-pick-row">
+                <input id="key-file" type="text" readonly placeholder="No file chosen" />
+                <button id="pick-key" class="ghost small" type="button">Browse…</button>
+              </div>
+              <p class="hint">PEM-encoded private key (key.pem). Required when a certificate is set.</p>
+            </div>
+
+            <div class="row">
+              <button id="save-https" class="primary" type="button">Save &amp; restart</button>
+              <span id="https-status" class="muted"></span>
+            </div>
+          </div>
+
+          <!-- Let's Encrypt panel -->
+          <div id="tab-acme" class="tab-panel" hidden>
+            <p class="hint">
+              Let's Encrypt issues a free, trusted certificate — no browser warning for listeners.
+              Choose how the required validation record gets created.
+            </p>
+
+            <div class="field-group">
+              <label class="field-label" for="dns-provider">DNS provider</label>
+              <select id="dns-provider">
+                <option value="netcup">Netcup — fully automatic</option>
+                <option value="manual">Other / manual — works with any provider</option>
+              </select>
+            </div>
+
+            <!-- Netcup sub-panel -->
+            <div id="acme-netcup">
+              <p class="hint">
+                Uses your Netcup API access from the <strong>Netcup</strong> tab to add and
+                remove the validation record automatically. Set those credentials there first.
+              </p>
+
+              <div class="row">
+                <button id="obtain-cert" class="primary" type="button">Get certificate</button>
+                <span id="acme-status" class="muted"></span>
+              </div>
+            </div>
+
+            <!-- Manual (any provider) sub-panel -->
+            <div id="acme-manual" hidden>
+              <p class="hint">
+                Works with any DNS provider. You add the records by hand in your provider's
+                dashboard; Every Ear watches for them and finishes on its own.
+              </p>
+
+              <!-- Step 1: A record (always shown) -->
+              <div class="dns-record-box">
+                <p class="field-label">Step 1 — point your domain at this computer</p>
+                <p class="hint">
+                  Create this <strong>A record</strong> in your DNS provider once, so the
+                  address actually reaches Every Ear. Only guests on this same network can use it.
+                </p>
+                <div class="dns-record-row">
+                  <span class="dns-label">Type</span><code>A</code>
+                </div>
+                <div class="dns-record-row">
+                  <span class="dns-label">Name</span>
+                  <code id="manual-a-name">—</code>
+                  <button class="ghost small copy-record" type="button" data-copy="manual-a-name">Copy</button>
+                </div>
+                <div class="dns-record-row">
+                  <span class="dns-label">Value</span>
+                  <code id="manual-a-value">—</code>
+                  <button class="ghost small copy-record" type="button" data-copy="manual-a-value">Copy</button>
+                </div>
+                <p class="hint">
+                  Tip: some providers want only the part before your domain (e.g.
+                  <code>events</code>), or <code>@</code> for the bare domain.
+                </p>
+              </div>
+
+              <!-- Step 2: start the flow -->
+              <div class="row">
+                <button id="obtain-cert-manual" class="primary" type="button">Get certificate</button>
+                <span id="acme-manual-status" class="muted"></span>
+              </div>
+
+              <!-- Step 2 detail: TXT record (revealed once the flow starts) -->
+              <div id="manual-txt-box" class="dns-record-box" hidden>
+                <p class="field-label">Step 2 — add this TXT record, then keep this window open</p>
+                <p class="hint">
+                  Every Ear checks every 20 seconds and continues automatically once it sees
+                  the record. You can delete it again once the certificate is installed.
+                </p>
+                <div class="dns-record-row">
+                  <span class="dns-label">Type</span><code>TXT</code>
+                </div>
+                <div class="dns-record-row">
+                  <span class="dns-label">Name</span>
+                  <code id="manual-txt-name">—</code>
+                  <button class="ghost small copy-record" type="button" data-copy="manual-txt-name">Copy</button>
+                </div>
+                <div class="dns-record-row">
+                  <span class="dns-label">Value</span>
+                  <code id="manual-txt-value">—</code>
+                  <button class="ghost small copy-record" type="button" data-copy="manual-txt-value">Copy</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <button id="clear-https" class="ghost" type="button">↩ Reset to internal CA</button>
+        </section>
+
+        <!-- DNS -->
+        <section class="card panel" id="panel-dns" hidden>
+          <h2>DNS</h2>
+          <p class="hint">
+            For a real domain to work, it needs a DNS <strong>A record</strong> that points
+            at this computer, so the address actually reaches Every Ear. Set it once at your
+            DNS provider. Only guests on this same network can use the address.
+          </p>
+
+          <!-- What the record must look like -->
+          <div class="dns-record-box">
+            <p class="field-label">The A record must look like this</p>
+            <div class="dns-record-row">
+              <span class="dns-label">Type</span><code>A</code>
+            </div>
+            <div class="dns-record-row">
+              <span class="dns-label">Name</span>
+              <code id="dns-a-name">—</code>
+              <button class="ghost small copy-record" type="button" data-copy="dns-a-name">Copy</button>
+            </div>
+            <div class="dns-record-row">
+              <span class="dns-label">Value</span>
+              <code id="dns-a-value">—</code>
+              <button class="ghost small copy-record" type="button" data-copy="dns-a-value">Copy</button>
+            </div>
+            <p class="hint">
+              <strong>Value</strong> is this computer's current IP on the event network.
+              <strong>Name</strong> is your full domain — note that some providers want only
+              the part before your domain (e.g. <code>events</code>), or <code>@</code> for
+              the bare domain.
+            </p>
+          </div>
+
+          <div class="cta-box">
+            <button id="update-dns" class="primary block" type="button">
+              Update A-record to this computer's IP
+            </button>
+            <span id="dns-status" class="muted"></span>
+            <p class="hint">
+              If your domain is at Netcup, this sets or repoints the A record at this machine's
+              current IP — no new certificate is requested. Run it whenever the IP changes
+              between events. Add your Netcup credentials on the <strong>Netcup</strong> tab first.
+            </p>
+          </div>
+        </section>
+
+        <!-- Netcup -->
+        <section class="card panel" id="panel-netcup" hidden>
+          <h2>Netcup</h2>
+          <p class="hint">
+            Enter your Netcup API access once. Every Ear can then update the A record for you on
+            the <strong>DNS</strong> tab, and reuse the same credentials to issue a Let's Encrypt
+            certificate on the <strong>Certificate</strong> tab.
+          </p>
+
+          <div class="field-group">
+            <label class="field-label" for="netcup-customer-id">Customer ID</label>
             <input id="netcup-customer-id" type="text" placeholder="123456" autocomplete="off" spellcheck="false" />
-            <p class="hint">Found in Netcup CCP under <em>Master data → Customer number</em>.</p>
+            <p class="hint">Netcup CCP → <em>Master data → Customer number</em>.</p>
           </div>
 
           <div class="field-group">
@@ -157,58 +314,38 @@
           <div class="field-group">
             <label class="field-label" for="netcup-api-password">API Password</label>
             <input id="netcup-api-password" type="password" autocomplete="off" />
-            <p class="hint">Create an API key in Netcup CCP under <em>Master data → API</em>.</p>
+            <p class="hint">Create an API key in Netcup CCP → <em>Master data → API</em>.</p>
+          </div>
+        </section>
+
+        <!-- Advanced -->
+        <section class="card panel" id="panel-advanced" hidden>
+          <h2>Advanced</h2>
+
+          <div class="field-group">
+            <button id="reveal-logs" class="ghost small" type="button">Reveal log folder</button>
+            <p id="log-path-hint" class="hint"></p>
           </div>
 
-          <div class="row">
-            <button id="obtain-cert" class="primary" type="button">Get certificate</button>
-            <span id="acme-status" class="muted"></span>
-          </div>
+          <hr class="divider" />
 
-          <div class="field-group dns-update">
-            <p class="hint">
-              Already have a certificate but your IP changed? Point your domain at this
-              machine's current IP by updating only the Netcup A-record — no new
-              certificate is requested.
-            </p>
+          <div class="field-group">
             <div class="row">
-              <button id="update-dns" class="ghost small" type="button">Update IP (A-record only)</button>
-              <span id="dns-status" class="muted"></span>
+              <button id="regen-creds" type="button">Regenerate LiveKit credentials</button>
             </div>
+            <p class="hint">Re-rolls the API key + secret. Active translators reconnect automatically.</p>
           </div>
-        </div>
 
-        <button id="clear-https" class="ghost" type="button">↩ Reset to internal CA</button>
-      </section>
-
-      <!-- Advanced -->
-      <section class="card">
-        <h2>Advanced</h2>
-
-        <div class="info-row">
-          <button id="reveal-logs" class="ghost small" type="button">Reveal log folder</button>
-          <span id="version-hint" class="version-text"></span>
-        </div>
-        <p id="log-path-hint" class="hint"></p>
-
-        <hr class="divider" />
-
-        <div class="field-group">
-          <div class="row">
-            <button id="regen-creds" type="button">Regenerate LiveKit credentials</button>
+          <div class="danger-zone">
+            <div class="danger-zone-text">
+              <strong>Reset all data</strong>
+              <p class="hint">Wipes events, codes, languages, backgrounds, and credentials. Cannot be undone.</p>
+            </div>
+            <button id="reset-data" class="danger small" type="button">Reset</button>
           </div>
-          <p class="hint">Re-rolls the API key + secret. Active translators reconnect automatically.</p>
-        </div>
-
-        <div class="danger-zone">
-          <div class="danger-zone-text">
-            <strong>Reset all data</strong>
-            <p class="hint">Wipes events, codes, languages, backgrounds, and credentials. Cannot be undone.</p>
-          </div>
-          <button id="reset-data" class="danger small" type="button">Reset</button>
-        </div>
-      </section>
-    </main>
+        </section>
+      </main>
+    </div>
 
     <div id="firewall-info-modal" class="modal-backdrop" hidden>
       <div class="modal modal-scroll" role="dialog" aria-modal="true" aria-labelledby="firewall-info-title">

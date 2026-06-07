@@ -21,6 +21,7 @@ export type StatusView = {
   version: string;
   logDir: string;
   isFirstRun: boolean;
+  currentIp: string | null;
   customDomain: string | null;
   customCertFile: string | null;
   customKeyFile: string | null;
@@ -29,6 +30,12 @@ export type StatusView = {
   netcupApiPassword: string | null;
   firewallWarning: string | null;
   firewallBinaryPath: string | null;
+};
+
+export type ManualDnsChallenge = {
+  recordType: "TXT";
+  recordName: string;
+  recordValue: string;
 };
 
 const api = {
@@ -48,6 +55,13 @@ const api = {
     netcupApiKey: string;
     netcupApiPassword: string;
   }): Promise<StatusView> => ipcRenderer.invoke("settings:obtainCertificate", opts),
+  obtainCertificateManual: (opts: { domain: string }): Promise<StatusView> =>
+    ipcRenderer.invoke("settings:obtainCertificateManual", opts),
+  onAcmeChallenge: (cb: (challenge: ManualDnsChallenge) => void): (() => void) => {
+    const listener = (_e: unknown, challenge: ManualDnsChallenge) => cb(challenge);
+    ipcRenderer.on("settings:acme-challenge", listener);
+    return () => ipcRenderer.removeListener("settings:acme-challenge", listener);
+  },
   updateDnsRecord: (opts: {
     domain: string;
     netcupCustomerId: string;
