@@ -10,8 +10,10 @@ import {
 } from "./codes.js";
 import {
   ALLOWED_BG_EXT,
+  BACKGROUND_OUTPUT_EXT,
   clearEventBackground,
   clearGlobalBackground,
+  compressBackgroundImage,
 } from "./background.js";
 import {
   createEvent,
@@ -280,11 +282,17 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       if (!data.mimetype.startsWith("image/")) {
         return reply.code(400).send({ error: "must be an image" });
       }
-      const ext = data.mimetype.split("/")[1]?.toLowerCase() ?? "";
-      if (!ALLOWED_BG_EXT.has(ext)) {
+      const inputExt = data.mimetype.split("/")[1]?.toLowerCase() ?? "";
+      if (!ALLOWED_BG_EXT.has(inputExt)) {
         return reply.code(400).send({ error: `unsupported type: ${data.mimetype}` });
       }
-      const buffer = await data.toBuffer();
+      let buffer: Buffer;
+      try {
+        buffer = await compressBackgroundImage(await data.toBuffer());
+      } catch {
+        return reply.code(400).send({ error: "could not process image" });
+      }
+      const ext = BACKGROUND_OUTPUT_EXT;
       await fs.mkdir(config.dataDir, { recursive: true });
       await clearEventBackground(event.id);
       await fs.writeFile(
@@ -361,11 +369,17 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     if (!data.mimetype.startsWith("image/")) {
       return reply.code(400).send({ error: "must be an image" });
     }
-    const ext = data.mimetype.split("/")[1]?.toLowerCase() ?? "";
-    if (!ALLOWED_BG_EXT.has(ext)) {
+    const inputExt = data.mimetype.split("/")[1]?.toLowerCase() ?? "";
+    if (!ALLOWED_BG_EXT.has(inputExt)) {
       return reply.code(400).send({ error: `unsupported type: ${data.mimetype}` });
     }
-    const buffer = await data.toBuffer();
+    let buffer: Buffer;
+    try {
+      buffer = await compressBackgroundImage(await data.toBuffer());
+    } catch {
+      return reply.code(400).send({ error: "could not process image" });
+    }
+    const ext = BACKGROUND_OUTPUT_EXT;
     await fs.mkdir(config.dataDir, { recursive: true });
     await clearGlobalBackground();
     await fs.writeFile(path.join(config.dataDir, `background.${ext}`), buffer);
