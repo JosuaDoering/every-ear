@@ -8,7 +8,7 @@ type LanCandidateView = {
 };
 
 type UpdateState = {
-  platform: "win" | "mac" | "other";
+  platform: "win" | "mac" | "linux" | "other";
   current: string;
   latest: string | null;
   status:
@@ -657,11 +657,11 @@ function renderUpdate(u: UpdateState): void {
       line = `Installed version: ${u.current} · New version ${u.latest} available`;
       els.downloadUpdate.hidden = false;
       els.downloadUpdate.textContent =
-        u.platform === "mac" ? "Download update" : "Download now";
+        u.platform === "win" ? "Download now" : "Download update";
       status =
-        u.platform === "mac"
-          ? "Opens the download — install it like the first time."
-          : "";
+        u.platform === "win"
+          ? ""
+          : "Opens the download — install it like the first time.";
       break;
     case "downloading":
       status = `Downloading update… ${u.downloadPercent ?? 0}%`;
@@ -705,7 +705,7 @@ els.downloadUpdate.addEventListener("click", async () => {
 });
 
 els.installUpdate.addEventListener("click", () => {
-  // Triggers app quit + installer on Windows; on macOS just opens the download.
+  // Triggers app quit + installer on Windows/Linux AppImage; on macOS/Linux deb opens the download.
   void window.everyEar.installUpdate();
 });
 

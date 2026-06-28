@@ -28,7 +28,7 @@ export function createTray(context: TrayContext): Tray {
   trayInstance.setToolTip("Every Ear");
   rebuildMenu();
   trayInstance.on("click", () => {
-    if (process.platform === "win32") context.openSettings();
+    if (process.platform === "win32" || process.platform === "linux") context.openSettings();
   });
   return trayInstance;
 }
@@ -105,7 +105,7 @@ function rebuildMenu(): void {
 // "check now".
 function updateMenuItem(): Electron.MenuItemConstructorOptions {
   const u = ctx!.updateState();
-  if (u.platform === "win" && u.status === "ready") {
+  if ((u.platform === "win" || u.platform === "linux") && u.status === "ready") {
     return { label: `Restart to update (${u.latest})…`, click: () => ctx!.installUpdate() };
   }
   if (u.status === "available") {
