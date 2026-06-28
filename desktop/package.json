@@ -12,8 +12,10 @@
     "dev": "npm run build && electron .",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
     "release:mac": "electron-builder --mac --publish always",
-    "release:win": "electron-builder --win --publish always"
+    "release:win": "electron-builder --win --publish always",
+    "release:linux": "electron-builder --linux --publish always"
   },
   "dependencies": {
     "acme-client": "^5.4.0",

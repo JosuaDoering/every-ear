@@ -224,6 +224,8 @@ app.whenReady().then(async () => {
             "x-apple.systempreferences:com.apple.preference.security?Firewall",
           );
         }
+        // Linux has no standard firewall settings GUI — the firewall-check
+        // module never emits a warning on Linux, so this path is unreachable.
       },
       checkForUpdates: async () => {
         await updater.checkForUpdates();

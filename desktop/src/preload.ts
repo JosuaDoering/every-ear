@@ -20,7 +20,7 @@ export type UpdateStatus =
   | "error";
 
 export type UpdateState = {
-  platform: "win" | "mac" | "other";
+  platform: "win" | "mac" | "linux" | "other";
   current: string;
   latest: string | null;
   status: UpdateStatus;
