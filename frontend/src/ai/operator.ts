@@ -66,6 +66,14 @@ export class AiOperator {
   private contexts = new Map<string, string[]>();
   private lastInterim = new Map<string, number>();
   private running = false;
+  // Backpressure: at most one in-flight translation per channel, plus a
+  // single pending slot that holds the latest chunk waiting to be sent.
+  // If a new chunk arrives while one is in-flight AND one is pending, the
+  // pending one is replaced (newer speech supersedes older, partly-spoken
+  // text). This keeps the request fan-out bounded regardless of how fast
+  // the chunker emits or how slow the upstream API responds.
+  private inFlight = new Set<string>();
+  private pending = new Map<string, { id: number; text: string; sourceLang: string }>();
 
   constructor(
     private readonly grant: { aiLanguages?: AiLanguageGrant[]; name: string },
@@ -108,7 +116,34 @@ export class AiOperator {
   private onChunk(id: number, text: string): void {
     const sourceLang = this.getSourceLang();
     for (const ch of this.channels) {
-      void this.translateAndPublish(id, text, sourceLang, ch);
+      if (this.inFlight.has(ch.code)) {
+        // A translation is already running for this channel; hold the latest
+        // chunk as pending. If one was already pending, it is overwritten —
+        // the newer utterance is more relevant than the superseded one.
+        this.pending.set(ch.code, { id, text, sourceLang });
+        continue;
+      }
+      void this.runTranslateAndPublish(id, text, sourceLang, ch);
+    }
+  }
+
+  private async runTranslateAndPublish(
+    id: number,
+    text: string,
+    sourceLang: string,
+    ch: Channel,
+  ): Promise<void> {
+    this.inFlight.add(ch.code);
+    try {
+      await this.translateAndPublish(id, text, sourceLang, ch);
+    } finally {
+      this.inFlight.delete(ch.code);
+      // Drain the pending slot (if any) now that the channel is free.
+      const next = this.pending.get(ch.code);
+      if (next) {
+        this.pending.delete(ch.code);
+        void this.runTranslateAndPublish(next.id, next.text, next.sourceLang, ch);
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { persistJsonAtomic } from "../store.js";
 
 export type AiConfig = {
   /** OpenRouter API key. Stays server-side; only ever returned masked. */
@@ -33,8 +34,7 @@ function envSeed(): Partial<AiConfig> {
 }
 
 async function persist(c: AiConfig): Promise<void> {
-  await fs.mkdir(config.dataDir, { recursive: true });
-  await fs.writeFile(file(), JSON.stringify(c, null, 2));
+  await persistJsonAtomic(file(), c);
 }
 
 export async function loadAiConfig(): Promise<AiConfig> {

@@ -490,13 +490,23 @@ function showNotification(body: string): void {
   new Notification({ title: "Every Ear", body }).show();
 }
 
-// Surface unexpected supervisor crashes so the user isn't left wondering why
-// listeners stopped working. Don't auto-restart; that hides bugs.
-supervisor.events.on("crash", ({ name, code }: { name: string; code: number | null }) => {
-  showNotification(`${name} exited unexpectedly (code ${code}). Open Settings to restart.`);
-  broadcastStatus();
-  tray.refresh();
-});
+// Surface unexpected supervisor crashes. The supervisor now attempts a
+// bounded auto-restart with backoff; we notify the user on every crash and
+// flag fatal ones (restart budget exhausted) so they know manual action is
+// needed.
+supervisor.events.on(
+  "crash",
+  ({ name, code, fatal, detail }: { name: string; code: number | null; fatal?: boolean; detail?: string }) => {
+    const suffix = detail ? ` — ${detail}` : "";
+    if (fatal) {
+      showNotification(`${name} crashed fatally${suffix}. Open Settings to restart manually.`);
+    } else {
+      showNotification(`${name} exited unexpectedly (code ${code})${suffix}.`);
+    }
+    broadcastStatus();
+    tray.refresh();
+  },
+);
 
 // Last-chance error paths so the user sees something instead of a silent quit.
 process.on("uncaughtException", (err) => {

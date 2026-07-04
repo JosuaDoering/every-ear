@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
+import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
 import { listenerToken, translatorToken, aiPublisherToken } from "./tokens.js";
 import { getCode, listCodes, markUsed } from "./codes.js";
@@ -11,17 +12,57 @@ import {
 } from "./languages.js";
 import { adminPlugin } from "./admin.js";
 import { registerBackgroundRoutes } from "./background.js";
-import { startStatsCollector } from "./stats.js";
+import { startStatsCollector, isLiveKitReachable } from "./stats.js";
 import { loadAiConfig } from "./ai/config.js";
 import { translateStream, type TranslateError } from "./ai/translate.js";
 
 async function start() {
   // trustProxy so req.ip reflects the real client behind the Caddy reverse
-  // proxy (via X-Forwarded-For) rather than 127.0.0.1.
-  const app = Fastify({ logger: true, trustProxy: true });
+  // proxy (via X-Forwarded-For) rather than 127.0.0.1. Timeouts bound resource
+  // usage: a stalled client can't hold a connection or an in-flight request
+  // open indefinitely, which matters under load on event WiFi.
+  const app = Fastify({
+    logger: true,
+    trustProxy: true,
+    bodyLimit: 2 * 1024 * 1024,
+    // Drop idle keep-alive sockets after 30s and force a connection-level
+    // timeout so slow/stuck clients free up server resources.
+    keepAliveTimeout: 30_000,
+    connectionTimeout: 60_000,
+    requestTimeout: 90_000,
+  });
 
   await app.register(multipart, {
     limits: { fileSize: 10 * 1024 * 1024 },
+  });
+
+  // Global per-IP rate limit: a generous ceiling that protects against
+  // runaway clients / accidental loops without throttling real event
+  // traffic (hundreds of phones behind one NAT share a single upstream
+  // IP — the limit is high on purpose). Stricter limits are applied per
+  // route below.
+  await app.register(rateLimit, {
+    max: 600,
+    timeWindow: "1 minute",
+    // Allow the shared LAN IP to burst during join surges at the start of
+    // an event; the per-route caps below still bound the expensive paths.
+    ban: 0,
+    addHeaders: {
+      "x-ratelimit-limit": true,
+      "x-ratelimit-remaining": true,
+      "x-ratelimit-reset": true,
+      "retry-after": true,
+    },
+  });
+
+  // Readiness/liveness probe. Returns LiveKit reachability so Caddy/Electron
+  // (or any orchestrator) can distinguish "backend up" from "stack ready".
+  app.get("/api/health", async () => {
+    return {
+      status: "ok",
+      livekit: isLiveKitReachable() ? "ok" : "unreachable",
+      uptimeMs: process.uptime() * 1000,
+    };
   });
 
   app.get("/api/languages", async () => ({
@@ -61,6 +102,7 @@ async function start() {
 
   app.post<{ Body: { eventId?: string; language?: string } }>(
     "/api/token/listener",
+    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
     async (req, reply) => {
       const eventId = req.body?.eventId?.trim();
       const language = req.body?.language?.toLowerCase();
@@ -81,6 +123,9 @@ async function start() {
 
   app.post<{ Body: { code?: string } }>(
     "/api/token/translator",
+    // Tight limit: a 6-digit code is brute-forceable, so cap attempts per IP.
+    // Legitimate use is a handful of logins per minute at most.
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
     async (req, reply) => {
       const code = req.body?.code?.trim();
       if (!code || !/^\d{6}$/.test(code)) {
@@ -151,7 +196,13 @@ async function start() {
 
   app.post<{
     Body: { text?: string; sourceLang?: string; targetLang?: string; context?: string[] };
-  }>("/api/ai/translate", async (req, reply) => {
+  }>("/api/ai/translate",
+    // The shared concurrency limiter / circuit breaker in translate.ts is the
+    // real guard against OpenRouter overload; this per-IP cap just stops a
+    // single runaway client from flooding the queue. Generous enough for a
+    // multi-language AI operator (~6 req/s sustained).
+    { config: { rateLimit: { max: 600, timeWindow: "1 minute" } } },
+    async (req, reply) => {
     const text = req.body?.text?.trim();
     const sourceLang = req.body?.sourceLang?.toLowerCase();
     const targetLang = req.body?.targetLang?.toLowerCase();
