@@ -42,6 +42,9 @@ let client: RoomServiceClient | null = null;
 let timer: NodeJS.Timeout | null = null;
 let dirty = false;
 let lastPersist = 0;
+// Tracks whether the most recent LiveKit poll succeeded — exposed via
+// isLiveKitReachable() for the /api/health readiness probe.
+let lastPollOk = false;
 
 function liveKitUrl(): string {
   return process.env.LIVEKIT_URL ?? "http://127.0.0.1:7880";
@@ -165,9 +168,16 @@ async function poll(): Promise<void> {
       dirty = false;
       await persist();
     }
+    lastPollOk = true;
   } catch {
     // LiveKit may not be up yet, or briefly unreachable — try again next tick.
+    lastPollOk = false;
   }
+}
+
+/** True if the most recent LiveKit poll succeeded. Best-effort readiness signal. */
+export function isLiveKitReachable(): boolean {
+  return lastPollOk;
 }
 
 export async function startStatsCollector(): Promise<void> {

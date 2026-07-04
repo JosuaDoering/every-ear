@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { config } from "./config.js";
+import { persistJsonAtomic } from "./store.js";
 import { ensureDefaultEvent } from "./events.js";
 
 export type CodeRole = "translator" | "ai-operator";
@@ -52,8 +53,7 @@ async function load(): Promise<Map<string, Code>> {
 }
 
 async function persist(map: Map<string, Code>): Promise<void> {
-  const arr = Array.from(map.values());
-  await fs.writeFile(codesFile(), JSON.stringify(arr, null, 2));
+  await persistJsonAtomic(codesFile(), Array.from(map.values()));
 }
 
 export async function listCodes(eventId?: string): Promise<Code[]> {

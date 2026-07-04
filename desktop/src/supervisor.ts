@@ -50,7 +50,21 @@ const STATE = {
   status: "stopped" as SupervisorStatus,
   children: [] as Array<{ name: ProcSpec["name"]; child: ChildProcess }>,
   logStreams: [] as WriteStream[],
+  // Per-child restart accounting for bounded auto-restart. A rolling window
+  // caps how many restarts are attempted before we give up and surface a
+  // fatal crash, so a persistently failing child can't loop forever.
+  restarts: new Map<ProcSpec["name"], { count: number; windowStart: number }>(),
+  // The most recent env used to start, so a child can be re-spawned without
+  // forcing the caller to pass env again.
+  env: null as SupervisorEnv | null,
+  restartTimers: new Set<NodeJS.Timeout>(),
 };
+
+// Bounded auto-restart policy: at most MAX_RESTARTS within WINDOW_MS per
+// child, with exponential backoff. After that the crash is treated as fatal.
+const MAX_RESTARTS = 5;
+const RESTART_WINDOW_MS = 5 * 60 * 1000;
+const RESTART_BASE_MS = 1000;
 
 export const events = new EventEmitter();
 
@@ -150,6 +164,7 @@ export async function start(env: SupervisorEnv): Promise<void> {
   if (STATE.status !== "stopped") {
     throw new Error(`supervisor.start: already ${STATE.status}`);
   }
+  STATE.env = env;
   STATE.status = "starting";
   events.emit("status", STATE.status);
 
@@ -180,10 +195,15 @@ export async function stop(): Promise<void> {
     killChild(entry.name, entry.child);
   }
 
+  // Cancel any pending auto-restart timers so they don't fire after stop.
+  for (const t of STATE.restartTimers) clearTimeout(t);
+  STATE.restartTimers.clear();
+
   // Give the children a brief grace period to exit cleanly.
   await sleep(1500);
 
   STATE.children = [];
+  STATE.restarts.clear();
   for (const s of STATE.logStreams) s.end();
   STATE.logStreams = [];
   STATE.status = "stopped";
@@ -275,14 +295,64 @@ function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
 
   child.on("exit", (code, signal) => {
     events.emit("exit", { name: spec.name, code, signal });
-    if (STATE.status === "running") {
-      // Unexpected crash. Surface it; main process decides whether to
-      // notify the user. Don't auto-restart — that hides bugs.
-      events.emit("crash", { name: spec.name, code, signal });
-    }
+    if (STATE.status !== "running") return; // expected exit during stop/restart
+
+    // Unexpected crash. Try a bounded auto-restart with backoff so transient
+    // failures (e.g. LiveKit choking on a malformed packet) recover on their
+    // own. If the child keeps dying we stop trying and surface a fatal crash.
+    scheduleRestart(spec, env);
   });
 
   return child;
+}
+
+function scheduleRestart(spec: ProcSpec, env: SupervisorEnv): void {
+  const now = Date.now();
+  let acct = STATE.restarts.get(spec.name);
+  if (!acct) {
+    acct = { count: 0, windowStart: now };
+    STATE.restarts.set(spec.name, acct);
+  }
+  // Reset the window once it has elapsed, so a child that crashed a few times
+  // during an event and then stabilised isn't permanently near the cap.
+  if (now - acct.windowStart > RESTART_WINDOW_MS) {
+    acct.count = 0;
+    acct.windowStart = now;
+  }
+  acct.count++;
+
+  if (acct.count > MAX_RESTARTS) {
+    // Too many restarts within the window — treat as fatal and stop trying.
+    events.emit("crash", {
+      name: spec.name,
+      code: null,
+      signal: null,
+      fatal: true,
+      detail: `exceeded ${MAX_RESTARTS} restarts in ${RESTART_WINDOW_MS / 1000}s`,
+    });
+    return;
+  }
+
+  const attempt = acct.count;
+  const backoff = Math.min(RESTART_BASE_MS * 2 ** (attempt - 1), 30_000);
+  events.emit("crash", {
+    name: spec.name,
+    code: null,
+    signal: null,
+    fatal: false,
+    detail: `restarting (attempt ${attempt}/${MAX_RESTARTS}) in ${backoff}ms`,
+  });
+
+  const timer = setTimeout(() => {
+    STATE.restartTimers.delete(timer);
+    if (STATE.status !== "running") return; // stopped while we were waiting
+    // Replace the dead child entry with a fresh process.
+    const idx = STATE.children.findIndex((c) => c.name === spec.name);
+    if (idx < 0) return;
+    const child = spawnChild(spec, env);
+    STATE.children[idx] = { name: spec.name, child };
+  }, backoff);
+  STATE.restartTimers.add(timer);
 }
 
 function makeLineSink(

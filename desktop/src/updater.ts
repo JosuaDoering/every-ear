@@ -1,12 +1,13 @@
 // Update channel against GitHub Releases.
 //
-// The two platforms differ because the app is unsigned:
-//   * Windows — full auto-update via electron-updater (Squirrel/NSIS). The
-//     installer downloads in the background and applies on the next quit, or
-//     immediately via "Restart & install". Works fine unsigned.
-//   * macOS — Squirrel.Mac refuses to install unsigned updates, so we can't
-//     auto-install. Instead we *detect* a newer release through the GitHub API
-//     and send the user to the DMG to install by hand.
+// Platform strategy:
+//   * Windows — full auto-update via electron-updater (NSIS). Downloads in the
+//     background and applies on quit or via "Restart & install".
+//   * Linux AppImage — electron-updater replaces the AppImage in-place and
+//     relaunches. Detected by the APPIMAGE env var set by the AppImage runtime.
+//   * macOS — Squirrel.Mac refuses unsigned updates, so we detect via GitHub
+//     API and send the user to the DMG download.
+//   * Linux deb/rpm — same GitHub API detection, links to the AppImage download.
 //
 // State is kept here and pushed to the renderer/tray by the `onState` callback,
 // which routes through the existing buildStatus()/broadcastStatus() machinery.
@@ -31,7 +32,7 @@ export type UpdateStatus =
   | "error";
 
 export type UpdateState = {
-  platform: "win" | "mac" | "other";
+  platform: "win" | "mac" | "linux" | "other";
   /** The running app version. */
   current: string;
   /** Newest version found, or null before the first check. */
@@ -39,7 +40,7 @@ export type UpdateState = {
   status: UpdateStatus;
   /** 0–100 while a Windows update downloads. */
   downloadPercent?: number;
-  /** macOS only: the DMG (or release page) to open for a manual install. */
+  /** macOS / Linux deb: URL to open for a manual install (DMG / AppImage). */
   downloadUrl?: string | null;
   error?: string | null;
 };
@@ -47,7 +48,13 @@ export type UpdateState = {
 function detectPlatform(): UpdateState["platform"] {
   if (process.platform === "win32") return "win";
   if (process.platform === "darwin") return "mac";
+  if (process.platform === "linux") return "linux";
   return "other";
+}
+
+// AppImage sets APPIMAGE to its own path; absent means deb/rpm/manual install.
+function isAppImage(): boolean {
+  return process.platform === "linux" && Boolean(process.env.APPIMAGE);
 }
 
 let state: UpdateState = {
@@ -76,7 +83,7 @@ function emit(patch: Partial<UpdateState>): void {
 
 export function initUpdater(opts: { onState: (s: UpdateState) => void }): void {
   onState = opts.onState;
-  if (state.platform === "win") wireWindows();
+  if (state.platform === "win" || isAppImage()) wireAutoUpdater();
 
   // First check shortly after launch (let the stack settle), then on a slow
   // interval. Timers are unref'd so they never hold the app open.
@@ -90,9 +97,9 @@ export function disposeUpdater(): void {
   checkTimer = null;
 }
 
-// ---- Windows (electron-updater) -------------------------------------------
+// ---- Windows + Linux AppImage (electron-updater) --------------------------
 
-function wireWindows(): void {
+function wireAutoUpdater(): void {
   if (windowsWired) return;
   windowsWired = true;
   autoUpdater.autoDownload = true;
@@ -115,7 +122,7 @@ function wireWindows(): void {
   autoUpdater.on("error", (err) => emit({ status: "error", error: messageOf(err) }));
 }
 
-// ---- macOS (GitHub API detection) -----------------------------------------
+// ---- macOS + Linux (deb) — GitHub API detection ---------------------------
 
 type GithubRelease = {
   tag_name?: string;
@@ -123,7 +130,7 @@ type GithubRelease = {
   assets?: { name: string; browser_download_url: string }[];
 };
 
-async function checkMac(): Promise<void> {
+async function checkGitHub(): Promise<void> {
   emit({ status: "checking", error: null });
   try {
     const res = await fetch(
@@ -136,11 +143,14 @@ async function checkMac(): Promise<void> {
     if (!latest) throw new Error("No release tag found.");
 
     if (isNewer(latest, state.current)) {
-      const dmg = data.assets?.find((a) => a.name.toLowerCase().endsWith(".dmg"));
+      // macOS: prefer the DMG; Linux (deb install): prefer the AppImage.
+      const asset = state.platform === "linux"
+        ? data.assets?.find((a) => a.name.toLowerCase().endsWith(".appimage"))
+        : data.assets?.find((a) => a.name.toLowerCase().endsWith(".dmg"));
       emit({
         status: "available",
         latest,
-        downloadUrl: dmg?.browser_download_url ?? data.html_url ?? null,
+        downloadUrl: asset?.browser_download_url ?? data.html_url ?? null,
       });
       notifyOnce(latest, `Update ${latest} available — click to download.`);
     } else {
@@ -154,7 +164,7 @@ async function checkMac(): Promise<void> {
 // ---- Public actions (driven by IPC / tray) --------------------------------
 
 export async function checkForUpdates(): Promise<UpdateState> {
-  if (state.platform === "win") {
+  if (state.platform === "win" || isAppImage()) {
     try {
       await autoUpdater.checkForUpdates();
     } catch (err) {
@@ -162,8 +172,8 @@ export async function checkForUpdates(): Promise<UpdateState> {
     }
     return getState();
   }
-  if (state.platform === "mac") {
-    await checkMac();
+  if (state.platform === "mac" || state.platform === "linux") {
+    await checkGitHub();
     return getState();
   }
   emit({ status: "uptodate" });
@@ -171,11 +181,11 @@ export async function checkForUpdates(): Promise<UpdateState> {
 }
 
 export async function downloadUpdate(): Promise<UpdateState> {
-  if (state.platform === "mac") {
+  if (state.platform === "mac" || (state.platform === "linux" && !isAppImage())) {
     if (state.downloadUrl) await shell.openExternal(state.downloadUrl);
     return getState();
   }
-  if (state.platform === "win") {
+  if (state.platform === "win" || isAppImage()) {
     try {
       await autoUpdater.downloadUpdate();
     } catch (err) {
@@ -186,12 +196,12 @@ export async function downloadUpdate(): Promise<UpdateState> {
 }
 
 export function installUpdate(): UpdateState {
-  if (state.platform === "win" && state.status === "ready") {
-    // quitAndInstall spawns the installer (which waits for us to exit) and then
-    // quits — our will-quit handler stops the supervisor before the app dies.
+  if ((state.platform === "win" || isAppImage()) && state.status === "ready") {
+    // quitAndInstall spawns the installer / replaces the AppImage then
+    // quits — our will-quit handler stops the supervisor first.
     // Defer so the IPC reply is sent first.
     setImmediate(() => autoUpdater.quitAndInstall());
-  } else if (state.platform === "mac" && state.downloadUrl) {
+  } else if ((state.platform === "mac" || state.platform === "linux") && state.downloadUrl) {
     void shell.openExternal(state.downloadUrl);
   }
   return getState();

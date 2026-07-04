@@ -1,8 +1,8 @@
-# Publish a release on a version tag (e.g. v1.2.3). Builds macOS (arm64) and
-# Windows (x64), uploads both — plus the Windows auto-update feed (latest.yml)
-# — to a single draft GitHub Release, then flips that draft to published so the
-# two platform assets appear together. The Windows app auto-updates from this
-# feed; macOS detects the new release via the GitHub API and links to the DMG.
+# Publish a release on a version tag (e.g. v1.2.3). Builds macOS (arm64),
+# Windows (x64) and Linux (x64 + arm64 AppImage, x64 deb), uploads all to a
+# single draft GitHub Release, then flips that draft to published so all
+# platform assets appear together. Windows and Linux AppImage auto-update from
+# the feed; macOS and Linux deb detect the new release via the GitHub API.
 name: Release desktop
 
 on:
@@ -27,6 +27,8 @@ jobs:
             platform: mac
           - os: windows-latest
             platform: win
+          - os: ubuntu-latest
+            platform: linux
 
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +47,10 @@ jobs:
         if: matrix.platform == 'mac'
         with:
           go-version: stable
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse2 libgtk-3-dev libxss1 libnss3 libgbm1
 
       - run: npm ci
       - run: npm ci

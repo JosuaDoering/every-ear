@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { persistJsonAtomic } from "./store.js";
 
 export type LanguageEntry = { code: string; name: string; flag: string };
 
@@ -70,7 +71,7 @@ async function load(): Promise<Map<string, LanguageEntry>> {
 }
 
 async function persist(m: Map<string, LanguageEntry>): Promise<void> {
-  await fs.writeFile(file(), JSON.stringify(Array.from(m.values()), null, 2));
+  await persistJsonAtomic(file(), Array.from(m.values()));
 }
 
 export async function listLanguages(): Promise<LanguageEntry[]> {

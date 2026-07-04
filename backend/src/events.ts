@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
+import { persistJsonAtomic } from "./store.js";
 import {
   languageCodeSet,
   listLanguages,
@@ -46,8 +47,7 @@ async function load(): Promise<Map<string, Event>> {
 }
 
 async function persist(map: Map<string, Event>): Promise<void> {
-  const arr = Array.from(map.values());
-  await fs.writeFile(eventsFile(), JSON.stringify(arr, null, 2));
+  await persistJsonAtomic(eventsFile(), Array.from(map.values()));
 }
 
 export async function listEvents(): Promise<Event[]> {
