@@ -14,10 +14,61 @@ It ships as a desktop application for macOS and Windows. Guests connect from any
 
 ## Requirements
 
-- A **Mac** or **Windows PC** to run the application (referred to as the *host*).
+- A **Mac** or **Windows PC** to run the application (referred to as the *host*). A Linux server can also host the stack for large events (see *System requirements* below).
 - A **local network** shared by everyone present. A wired (Ethernet) connection from the host to the router gives the most stable audio. No internet access is required for a basic event.
 - A **microphone** for each translator. The phone's device might be sufficient. Bluetooth headphones are not recommended. 
 - A **web browser** on each listener's device. Listener's can use bluetooth headphones. 
+
+## System requirements
+
+Every Ear is a single-node deployment: one LiveKit SFU, a Fastify backend, and Caddy all run on the host. The hard ceiling is **600 listeners per language room** (`livekit.yaml` → `max_participants: 600`). The bottleneck at that scale is never the backend (a single-threaded Node process with negligible CPU use) — it is the **LiveKit SFU (CPU) and the host's uplink bandwidth** for the audio fan-out.
+
+The translator's audio track is published once at ~32 kbit/s and forwarded by the SFU to every subscriber, so sustained egress is roughly `32 kbit/s × listeners + ~20 % overhead` (≈ 23 Mbit/s for 600 listeners). Join bursts at the start of an event add temporary spikes from reconnects and TLS handshakes.
+
+### Minimum and recommended hardware
+
+| Component | Minimum (up to ~200 listeners) | Recommended (600 listeners, full room) | Notes |
+|-----------|--------------------------------|----------------------------------------|-------|
+| **CPU**   | 2 cores                        | 4–8 cores                              | LiveKit SFU fan-out dominates: ~2 cores for 600 subscribers incl. RTCP/reconnect spikes; backend + Caddy need ~1–2 cores of headroom during join bursts. |
+| **RAM**   | 2 GB                           | 4–8 GB                                 | LiveKit ~300–500 MB for 600 sessions; Node backend ~150 MB; Caddy small. 2 GB works for small events but leaves no reserve for reconnect storms. |
+| **Disk**  | 10 GB                          | 20–40 GB SSD                           | Binaries (LiveKit/Caddy), logs (`access.log` rotates at 10 MB × 3), `data/` JSON files. SSD recommended — log writes are synchronous. |
+| **NIC**   | 100 Mbit/s                     | 1 Gbit/s                               | 600 listeners at 32 kbit/s ≈ 23–25 Mbit/s egress + overhead. A 100 Mbit/s NIC has no headroom for join bursts. |
+| **Uplink (sustained)** | ≥ 25 Mbit/s sym.   | ≥ 100 Mbit/s sym.                      | The real bottleneck. Event WiFi / internet uplink saturates before the host does. |
+
+### Per-platform notes
+
+**macOS (Apple Silicon or Intel)** — The desktop app bundles LiveKit and Caddy and runs the whole stack. Apple Silicon Macs (M1 and later) comfortably handle a full 600-listener room. Intel Macs work but stay below ~300 listeners for headroom. Use Ethernet (a USB/Thunderbolt adapter if needed); the Mac's own WiFi should be off while hosting.
+
+**Windows 11** — Same bundled-stack model. A modern 4-core PC with 8 GB RAM handles a full room. Plug the host into the router over Ethernet and disable WiFi to avoid the host competing with listeners for airtime.
+
+**Linux (server, large events)** — Run the stack from source (see *Running from source*) on a dedicated machine or VM. A **4 vCPU / 4 GB RAM / 1 Gbit/s NIC / SSD** instance is the practical minimum for a full 600-listener room; 2 vCPU / 2 GB works down to ~200–300 listeners but becomes unstable under reconnect spikes. Keep the host on the same switch as the access points. Linux 6.x is preferred for its improved UDP/RTC stack.
+
+Recommended `sysctl` values for 600 UDP sessions on Linux:
+
+```text
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.core.rmem_default=1048576
+net.core.wmem_default=1048576
+net.core.netdev_max_backlog=5000
+net.ipv4.udp_rmem_min=16384
+net.ipv4.udp_wmem_min=16384
+```
+
+### Network and firewall
+
+Open these ports on the host:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 8443 | TCP | Caddy HTTPS (listener-facing) |
+| 7882 | UDP | WebRTC media (LiveKit, direct browser ↔ LiveKit) — most critical |
+| 7881 | TCP | WebRTC media fallback (when UDP is blocked) |
+| 7880 | TCP | LiveKit signaling (internal, proxied via Caddy) |
+
+### Beyond 600 listeners
+
+A single LiveKit node caps at 600 participants per room by configuration. Exceeding that requires LiveKit clustering (multi-node with Redis), which this app does not configure. The backend and Caddy layers impose no additional cap.
 
 ## Terminology
 
@@ -185,7 +236,7 @@ livekit-cli load-test \
   --room event-<id>-lang-en --subscribers 200 --duration 60s
 ```
 
-As a bandwidth estimate, 500 listeners at ~50 kbit/s is roughly 25 Mbit/s; use Ethernet between the host and the wireless access points.
+As a bandwidth estimate, 600 listeners at ~32 kbit/s per track is roughly 23–25 Mbit/s of sustained egress (plus overhead during join bursts); use Ethernet between the host and the wireless access points. See *System requirements* for full hardware guidance.
 
 ## License
 
