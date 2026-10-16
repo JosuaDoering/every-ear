@@ -57,6 +57,13 @@ const NODE_IP = requireVar("LIVEKIT_NODE_IP");
 const API_KEY = requireVar("LIVEKIT_API_KEY");
 const API_SECRET = requireVar("LIVEKIT_API_SECRET");
 
+// Point LiveKit's webhooks at the backend so the stats collector gets real-time
+// participant events (falls back to API reconciliation if the backend is down).
+// LiveKit exposes every config path as a LIVEKIT_* env override.
+const backendPort = env.BACKEND_PORT ?? "3000";
+env.LIVEKIT_WEBHOOK_API_KEY = API_KEY;
+env.LIVEKIT_WEBHOOK_URLS = `http://127.0.0.1:${backendPort}/api/livekit/webhook`;
+
 // On Windows, the LiveKit server binary is dropped into ./.bin by the
 // installer. Add it to PATH for this process tree so livekit-server resolves.
 const localBin = path.join(projectRoot, ".bin");

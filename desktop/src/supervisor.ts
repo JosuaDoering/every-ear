@@ -5,7 +5,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createWriteStream, writeFileSync, type WriteStream } from "node:fs";
+import { createWriteStream, renameSync, rmSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import path from "node:path";
 import {
   backendCwd,
@@ -262,6 +262,9 @@ function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
     EVERY_EAR_DATA_DIR: env.dataDir,
     EVERY_EAR_DEFAULT_BG: defaultBackgroundPath(),
     FRONTEND_DIST: frontendDist(),
+    // LiveKit webhooks → backend stats collector (harmless for other children).
+    LIVEKIT_WEBHOOK_API_KEY: env.livekitApiKey,
+    LIVEKIT_WEBHOOK_URLS: "http://127.0.0.1:3000/api/livekit/webhook",
   };
 
   // The backend runs under the Electron binary as a plain Node process.
@@ -283,6 +286,16 @@ function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
   });
 
   const logFile = path.join(logDir(), `${spec.name}.log`);
+  // Cap the log file: rotate to a single .1 backup once it exceeds 10 MB, so a
+  // host left running for days can't slowly fill its disk.
+  try {
+    if (statSync(logFile).size > 10 * 1024 * 1024) {
+      rmSync(`${logFile}.1`, { force: true });
+      renameSync(logFile, `${logFile}.1`);
+    }
+  } catch {
+    // No existing log file yet — nothing to rotate.
+  }
   const logStream = createWriteStream(logFile, { flags: "a" });
   STATE.logStreams.push(logStream);
 

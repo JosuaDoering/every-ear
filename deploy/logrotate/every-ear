@@ -1,0 +1,14 @@
+# Rotation for any file-based logs under /var/log/every-ear.
+#
+# The systemd units log to the journal (handled by journald limits), so this
+# mainly covers Caddy's access log if you configure it to write to a file, or
+# any future file logger.
+/var/log/every-ear/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

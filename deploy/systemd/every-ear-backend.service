@@ -1,0 +1,21 @@
+[Unit]
+Description=Every Ear backend (Fastify: tokens, admin, stats)
+Documentation=https://github.com/JosuaDoering/every-ear
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=every-ear
+Group=every-ear
+WorkingDirectory=/opt/every-ear/backend
+EnvironmentFile=/etc/every-ear/env
+ExecStart=/usr/bin/node /opt/every-ear/backend/dist/server.js
+Restart=always
+RestartSec=1
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

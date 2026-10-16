@@ -14,7 +14,7 @@ It ships as a desktop application for macOS and Windows. Guests connect from any
 
 ## Requirements
 
-- A **Mac** or **Windows PC** to run the application (referred to as the *host*). A Linux server can also host the stack for large events (see *System requirements* below).
+- A **Mac** or **Windows PC** to run the desktop application, or a **Linux server** (Debian) to host the stack for large events (see *Running on a Linux server (Debian)*). The host may be referred to as the *host*.
 - A **local network** shared by everyone present. A wired (Ethernet) connection from the host to the router gives the most stable audio. No internet access is required for a basic event.
 - A **microphone** for each translator. The phone's device might be sufficient. Bluetooth headphones are not recommended. 
 - A **web browser** on each listener's device. Listener's can use bluetooth headphones. 
@@ -157,6 +157,55 @@ If you already have a certificate (from your provider, your IT department, or a 
 
 The automatic path currently supports Netcup. With any other provider, use the **Other / manual** option for a free Let's Encrypt certificate, or supply your own certificate via the **Own Certificate** tab. The manual option works with any DNS provider.
 
+## Running on a Linux server (Debian)
+
+A dedicated Linux machine (or VM) is the recommended host for large events: it runs the same three processes — LiveKit, the Fastify backend and Caddy — but under **systemd**, without the desktop wrapper, and with kernel tuning applied.
+
+**Quick start** (from a checkout, as root):
+
+```bash
+sudo ./scripts/install-debian.sh
+```
+
+The installer builds the backend and frontend, downloads pinned LiveKit and Caddy binaries into `/opt/every-ear`, creates a dedicated unprivileged `every-ear` user, writes `/etc/every-ear/env`, installs three systemd units, applies `sysctl` tuning, and starts everything. It prints the listener URL and a freshly generated admin password.
+
+| Path | Purpose |
+|------|---------|
+| `/opt/every-ear` | Binaries, backend, built frontend, Caddyfile, `livekit.yaml` |
+| `/etc/every-ear/env` | Secrets and configuration (mode `0600`) |
+| `/var/lib/every-ear` | Events, codes, languages, stats, backgrounds |
+| `/var/log/every-ear` | Caddy access log (journald holds the rest) |
+
+The listener port defaults to **8443** (unprivileged, no root/CAP needed). Services are enabled on boot and restart automatically.
+
+**Trusted HTTPS without per-device warnings.** Set a `DOMAIN` and Netcup API credentials and the installer obtains a Let's Encrypt certificate via the DNS-01 challenge (no inbound port required), so listener devices show no certificate warning:
+
+```bash
+sudo DOMAIN=events.example.com \
+     NETCUP_CUSTOMER_ID=… NETCUP_API_KEY=… NETCUP_API_PASSWORD=… \
+     ./scripts/install-debian.sh
+```
+
+Point the domain's A record at the host's LAN IP (Netcup control panel or the app's DNS screen). Without a domain, Caddy uses its internal CA and each device must accept the certificate once. Renewal is automatic via `acme.sh` (it reloads Caddy after each renewal). Re-run `scripts/get-cert.sh` standalone to (re)issue a certificate later.
+
+**Operating the stack:**
+
+```bash
+journalctl -u every-ear-backend -f     # logs
+sudo ./scripts/doctor.sh               # health: services, ports, tuning, disk, metrics
+sudo ./scripts/backup.sh               # timestamped tarball of the data dir
+./scripts/loadtest.sh "event-<id>-lang-en" 600 60s   # validate a room before a big event
+sudo PURGE=1 ./scripts/uninstall-debian.sh           # remove everything
+```
+
+**Metrics.** LiveKit exposes Prometheus metrics on `:6789/metrics` and Caddy on `127.0.0.1:2019/metrics`. A sample scrape config is in `deploy/prometheus/every-ear.yml`.
+
+### Tuning notes
+
+- The backend polls LiveKit for channel stats, but LiveKit now pushes participant events to `/api/livekit/webhook` (configured automatically via `LIVEKIT_WEBHOOK_*`), so counts stay current without scanning the full participant list every few seconds.
+- Rate limits are per IP per minute and configurable via `RATE_LIMIT_GLOBAL_MAX` / `RATE_LIMIT_LISTENER_MAX` in `/etc/every-ear/env`. Raise them if a venue puts many guests behind a second NAT so they share one IP.
+- Raise the per-room ceiling with `LIVEKIT_ROOM_MAX_PARTICIPANTS` only alongside CPU/uplink headroom (see *System requirements*).
+
 ## Troubleshooting
 
 | Symptom | Resolution |
@@ -216,6 +265,7 @@ Plain scripts run the stack directly (Vite hot-reload, tsx-watch backend, Caddy 
 
 - macOS: `./scripts/install-mac.sh`, then `./scripts/start.sh` and `./scripts/show-url.sh`
 - Windows: `.\scripts\install-windows.cmd`, then `.\scripts\start.cmd` and `.\scripts\show-url.cmd`
+- Linux (server, production): `sudo ./scripts/install-debian.sh` — see *Running on a Linux server (Debian)* above. For a quick development run you can also use `node scripts/dev.mjs` from a checkout with a filled-in `.env`.
 
 Set `ADMIN_PASSWORD` and the `LANGUAGES` / `LANGUAGE_NAMES` / `LANGUAGE_FLAGS` seed values in `.env`. After first boot, the language list is stored in `backend/data/languages.json` and the seed variables are ignored.
 
