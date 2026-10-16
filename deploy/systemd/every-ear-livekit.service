@@ -13,6 +13,9 @@ User=every-ear
 Group=every-ear
 WorkingDirectory=/opt/every-ear
 EnvironmentFile=/etc/every-ear/env
+# LiveKit credentials regenerated from the web admin are written here by the
+# backend; the leading "-" makes systemd ignore it before the first boot.
+EnvironmentFile=-/var/lib/every-ear/livekit.env
 # Keys come from the env file. LIVEKIT_WEBHOOK_* (also in the env file) point
 # LiveKit's participant events at the backend stats collector.
 ExecStart=/opt/every-ear/bin/livekit-server --config /opt/every-ear/livekit.yaml --node-ip ${LIVEKIT_NODE_IP} --keys "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"

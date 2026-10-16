@@ -78,6 +78,40 @@ const $addLangCode = document.getElementById("add-lang-code") as HTMLInputElemen
 const $addLangFlag = document.getElementById("add-lang-flag") as HTMLInputElement;
 const $addLangName = document.getElementById("add-lang-name") as HTMLInputElement;
 
+// Settings modal.
+const $openSettings = document.getElementById("open-settings") as HTMLButtonElement;
+const $settingsModal = document.getElementById("settings-modal-backdrop") as HTMLDivElement;
+const $settingsModalClose = document.getElementById("settings-modal-close") as HTMLButtonElement;
+const $settingsRestartBanner = document.getElementById("settings-restart-banner") as HTMLDivElement;
+const $settingsLocalUrl = document.getElementById("settings-local-url") as HTMLElement;
+const $settingsListenerUrl = document.getElementById("settings-listener-url") as HTMLElement;
+const $settingsCopyLocal = document.getElementById("settings-copy-local") as HTMLButtonElement;
+const $settingsCopyListener = document.getElementById("settings-copy-listener") as HTMLButtonElement;
+const $settingsLivekitState = document.getElementById("settings-livekit-state") as HTMLElement;
+const $settingsPasswordForm = document.getElementById("settings-password-form") as HTMLFormElement;
+const $settingsPassword = document.getElementById("settings-password") as HTMLInputElement;
+const $settingsPasswordSubmit = document.getElementById("settings-password-submit") as HTMLButtonElement;
+const $settingsInterface = document.getElementById("settings-interface") as HTMLSelectElement;
+const $settingsPort = document.getElementById("settings-port") as HTMLInputElement;
+const $settingsNetworkSave = document.getElementById("settings-network-save") as HTMLButtonElement;
+const $settingsDomain = document.getElementById("settings-domain") as HTMLInputElement;
+const $settingsCertNetcup = document.getElementById("settings-cert-netcup") as HTMLButtonElement;
+const $settingsCertManual = document.getElementById("settings-cert-manual") as HTMLButtonElement;
+const $settingsDnsUpdate = document.getElementById("settings-dns-update") as HTMLButtonElement;
+const $settingsCertReset = document.getElementById("settings-cert-reset") as HTMLButtonElement;
+const $settingsCertOwn = document.getElementById("settings-cert-own") as HTMLButtonElement;
+const $settingsCertPem = document.getElementById("settings-cert-pem") as HTMLTextAreaElement;
+const $settingsKeyPem = document.getElementById("settings-key-pem") as HTMLTextAreaElement;
+const $settingsCertStatus = document.getElementById("settings-cert-status") as HTMLElement;
+const $settingsCertAutorenew = document.getElementById("settings-cert-autorenew") as HTMLElement;
+const $settingsCertRenew = document.getElementById("settings-cert-renew") as HTMLButtonElement;
+const $settingsNetcupCustomer = document.getElementById("settings-netcup-customer") as HTMLInputElement;
+const $settingsNetcupKey = document.getElementById("settings-netcup-key") as HTMLInputElement;
+const $settingsNetcupPassword = document.getElementById("settings-netcup-password") as HTMLInputElement;
+const $settingsNetcupSave = document.getElementById("settings-netcup-save") as HTMLButtonElement;
+const $settingsRegenerate = document.getElementById("settings-regenerate") as HTMLButtonElement;
+const $settingsReset = document.getElementById("settings-reset") as HTMLButtonElement;
+
 // QR codes.
 const $qrListener   = document.getElementById("qr-listener")     as HTMLCanvasElement;
 const $qrTranslator = document.getElementById("qr-translator")   as HTMLCanvasElement;
@@ -207,6 +241,7 @@ document.addEventListener("keydown", (e) => {
   else if (top === $eventModal) closeEditEventModal();
   else if (top === $langModal) closeLanguagesModal();
   else if (top === $aiModal) closeAiSettings();
+  else if (top === $settingsModal) closeSettings();
 });
 
 // ---- Language picker (chip checkboxes) ------------------------------------
@@ -1279,6 +1314,372 @@ $aiForm.addEventListener("submit", async (e) => {
   } finally {
     setButtonLoading($aiSubmit, false);
   }
+});
+
+// ---- Settings modal --------------------------------------------------------
+
+function closeSettings() {
+  closeModalEl($settingsModal);
+}
+
+bindBackdropClose($settingsModal, closeSettings);
+$settingsModalClose.addEventListener("click", closeSettings);
+$openSettings.addEventListener("click", () => void openSettings());
+
+type AdminSettingsResponse = {
+  settings: {
+    listenerPort: number;
+    publicHost: string | null;
+    preferredInterface: string | null;
+    customDomain: string | null;
+    netcupCustomerId: string | null;
+    hasNetcupKey: boolean;
+    hasNetcupPassword: boolean;
+  };
+  candidates: { iface: string; address: string; isDefaultRoute: boolean }[];
+  urls: { listener: string; admin: string; local: string };
+  cert: { domain: string | null; daysRemaining: number | null; autoRenew: boolean };
+};
+
+async function refreshRestartBanner() {
+  const res = await authedFetch("/api/admin/status");
+  if (!res.ok) return;
+  const s = (await res.json()) as { restartRequired: boolean; livekit: string };
+  $settingsRestartBanner.hidden = !s.restartRequired;
+  $settingsLivekitState.textContent = s.livekit === "ok" ? "reachable" : "unreachable";
+}
+
+async function openSettings() {
+  const res = await authedFetch("/api/admin/settings");
+  if (res.status === 401) return signOut();
+  if (!res.ok) {
+    toast(`Could not load settings (HTTP ${res.status})`, "error");
+    return;
+  }
+  const data = (await res.json()) as AdminSettingsResponse;
+
+  $settingsLocalUrl.textContent = data.urls.local;
+  $settingsListenerUrl.textContent = data.urls.listener;
+  $settingsDomain.value = data.settings.customDomain ?? "";
+  $settingsPort.value = String(data.settings.listenerPort);
+
+  $settingsInterface.innerHTML = "";
+  for (const c of data.candidates) {
+    const opt = document.createElement("option");
+    opt.value = c.iface;
+    opt.textContent = `${c.iface} — ${c.address}${c.isDefaultRoute ? " (default)" : ""}`;
+    $settingsInterface.appendChild(opt);
+  }
+  if (data.settings.preferredInterface) $settingsInterface.value = data.settings.preferredInterface;
+
+  $settingsNetcupCustomer.value = data.settings.netcupCustomerId ?? "";
+  $settingsNetcupKey.value = "";
+  $settingsNetcupPassword.value = "";
+  $settingsNetcupKey.placeholder = data.settings.hasNetcupKey ? "Saved — leave blank to keep" : "";
+  $settingsNetcupPassword.placeholder = data.settings.hasNetcupPassword
+    ? "Saved — leave blank to keep"
+    : "";
+  $settingsCertStatus.textContent = data.settings.customDomain
+    ? `Custom domain: ${data.settings.customDomain}`
+    : "Using Caddy's internal certificate.";
+  const cert = data.cert;
+  if (cert.autoRenew) {
+    $settingsCertAutorenew.textContent =
+      cert.daysRemaining != null
+        ? `on — expires in ${cert.daysRemaining} days`
+        : "on — no certificate installed yet";
+  } else if (cert.domain) {
+    $settingsCertAutorenew.textContent = "off — manual/own certificate (renew manually)";
+  } else {
+    $settingsCertAutorenew.textContent = "off — using internal certificate";
+  }
+
+  openModalEl($settingsModal);
+  await refreshRestartBanner();
+}
+
+async function saveSettings(patch: Record<string, unknown>): Promise<boolean> {
+  const res = await authedFetch("/api/admin/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (res.status === 401) {
+    signOut();
+    return false;
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    toast((body as { error?: string }).error ?? `Save failed (HTTP ${res.status})`, "error");
+    return false;
+  }
+  const out = (await res.json()) as { restartRequired?: boolean };
+  if (out.restartRequired) $settingsRestartBanner.hidden = false;
+  return true;
+}
+
+/** POST + read an SSE progress stream (used for certificate issuance). */
+async function streamSse(
+  url: string,
+  body: unknown,
+  onEvent: (ev: { progress?: string; challenge?: { recordName: string; recordValue: string }; error?: string; done?: boolean; listenerUrl?: string; result?: string }) => void,
+): Promise<void> {
+  const res = await authedFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) return signOut();
+  if (!res.ok || !res.body) {
+    toast(`Request failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      try {
+        onEvent(JSON.parse(line.slice(5).trim()));
+      } catch {
+        /* ignore partial/non-JSON lines */
+      }
+    }
+  }
+}
+
+$settingsCopyLocal.addEventListener("click", () => {
+  void navigator.clipboard.writeText($settingsLocalUrl.textContent ?? "").then(() => toast("Copied.", "success"));
+});
+$settingsCopyListener.addEventListener("click", () => {
+  void navigator.clipboard.writeText($settingsListenerUrl.textContent ?? "").then(() => toast("Copied.", "success"));
+});
+
+$settingsPasswordForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pw = $settingsPassword.value.trim();
+  if (!pw) {
+    toast("Enter a new password.", "error");
+    return;
+  }
+  setButtonLoading($settingsPasswordSubmit, true);
+  try {
+    if (await saveSettings({ adminPassword: pw })) {
+      toast("Password changed.", "success");
+      $settingsPassword.value = "";
+    }
+  } finally {
+    setButtonLoading($settingsPasswordSubmit, false);
+  }
+});
+
+$settingsNetworkSave.addEventListener("click", async () => {
+  const port = Number($settingsPort.value);
+  if (!Number.isFinite(port) || port < 1 || port > 65535) {
+    toast("Enter a valid port (1–65535).", "error");
+    return;
+  }
+  const ok = await saveSettings({
+    preferredInterface: $settingsInterface.value,
+    listenerPort: port,
+  });
+  if (ok) {
+    toast("Network settings saved.", "success");
+    await refreshRestartBanner();
+  }
+});
+
+$settingsNetcupSave.addEventListener("click", async () => {
+  const patch: Record<string, unknown> = {
+    netcupCustomerId: $settingsNetcupCustomer.value.trim(),
+  };
+  if ($settingsNetcupKey.value.trim()) patch.netcupApiKey = $settingsNetcupKey.value.trim();
+  if ($settingsNetcupPassword.value.trim()) patch.netcupApiPassword = $settingsNetcupPassword.value.trim();
+  if (await saveSettings(patch)) {
+    toast("Netcup credentials saved.", "success");
+    $settingsNetcupKey.value = "";
+    $settingsNetcupPassword.value = "";
+  }
+});
+
+$settingsCertNetcup.addEventListener("click", async () => {
+  const domain = $settingsDomain.value.trim();
+  if (!domain) {
+    toast("Enter a domain first.", "error");
+    return;
+  }
+  setButtonLoading($settingsCertNetcup, true);
+  $settingsCertStatus.textContent = "Starting…";
+  try {
+    await streamSse("/api/admin/certificate/netcup", { domain }, (ev) => {
+      if (ev.error) {
+        $settingsCertStatus.textContent = ev.error;
+        toast(ev.error, "error");
+      } else if (ev.progress) {
+        $settingsCertStatus.textContent = ev.progress;
+      } else if (ev.done) {
+        $settingsCertStatus.textContent = `Certificate installed. ${ev.listenerUrl ?? ""}`;
+        toast("Certificate installed.", "success");
+      }
+    });
+  } finally {
+    setButtonLoading($settingsCertNetcup, false);
+    await refreshRestartBanner();
+  }
+});
+
+$settingsCertManual.addEventListener("click", async () => {
+  const domain = $settingsDomain.value.trim();
+  if (!domain) {
+    toast("Enter a domain first.", "error");
+    return;
+  }
+  setButtonLoading($settingsCertManual, true);
+  $settingsCertStatus.textContent = "Starting…";
+  try {
+    await streamSse("/api/admin/certificate/manual", { domain }, (ev) => {
+      if (ev.error) {
+        $settingsCertStatus.textContent = ev.error;
+        toast(ev.error, "error");
+      } else if (ev.challenge) {
+        $settingsCertStatus.textContent = `Add this TXT record at your DNS provider: ${ev.challenge.recordName} = ${ev.challenge.recordValue}`;
+      } else if (ev.progress) {
+        $settingsCertStatus.textContent = ev.progress;
+      } else if (ev.done) {
+        $settingsCertStatus.textContent = `Certificate installed. ${ev.listenerUrl ?? ""}`;
+        toast("Certificate installed.", "success");
+      }
+    });
+  } finally {
+    setButtonLoading($settingsCertManual, false);
+    await refreshRestartBanner();
+  }
+});
+
+$settingsCertRenew.addEventListener("click", async () => {
+  setButtonLoading($settingsCertRenew, true);
+  $settingsCertStatus.textContent = "Checking certificate…";
+  try {
+    await streamSse("/api/admin/certificate/renew", {}, (ev) => {
+      if (ev.error) {
+        $settingsCertStatus.textContent = ev.error;
+        toast(ev.error, "error");
+      } else if (ev.progress) {
+        $settingsCertStatus.textContent = ev.progress;
+      } else if (ev.done) {
+        $settingsCertStatus.textContent = `Done (${ev.result ?? "ok"}). ${ev.listenerUrl ?? ""}`;
+        toast("Certificate check complete.", "success");
+        void openSettingsRefreshCert();
+      }
+    });
+  } finally {
+    setButtonLoading($settingsCertRenew, false);
+  }
+});
+
+async function openSettingsRefreshCert() {
+  const res = await authedFetch("/api/admin/settings");
+  if (!res.ok) return;
+  const data = (await res.json()) as AdminSettingsResponse;
+  const cert = data.cert;
+  if (cert.autoRenew) {
+    $settingsCertAutorenew.textContent =
+      cert.daysRemaining != null
+        ? `on — expires in ${cert.daysRemaining} days`
+        : "on — no certificate installed yet";
+  }
+}
+
+$settingsCertOwn.addEventListener("click", async () => {
+  const certPem = $settingsCertPem.value.trim();
+  const keyPem = $settingsKeyPem.value.trim();
+  if (!certPem || !keyPem) {
+    toast("Paste both the certificate and the private key.", "error");
+    return;
+  }
+  const res = await authedFetch("/api/admin/certificate/own", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain: $settingsDomain.value.trim(), certPem, keyPem }),
+  });
+  if (res.status === 401) return signOut();
+  if (!res.ok) {
+    toast(`Save failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  toast("Certificate saved.", "success");
+  $settingsCertPem.value = "";
+  $settingsKeyPem.value = "";
+});
+
+$settingsCertReset.addEventListener("click", async () => {
+  const ok = await confirmDialog({
+    title: "Reset certificate?",
+    message: "Reverts to Caddy's internal certificate, which each device must accept once.",
+    confirmLabel: "Reset",
+  });
+  if (!ok) return;
+  const res = await authedFetch("/api/admin/certificate/reset", { method: "POST" });
+  if (!res.ok) {
+    toast(`Reset failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  toast("Reverted to internal certificate.", "success");
+  $settingsCertStatus.textContent = "Using Caddy's internal certificate.";
+});
+
+$settingsDnsUpdate.addEventListener("click", async () => {
+  const res = await authedFetch("/api/admin/dns/update-a", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain: $settingsDomain.value.trim() }),
+  });
+  if (res.status === 401) return signOut();
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    toast((body as { error?: string }).error ?? `Update failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  toast((body as { message?: string }).message ?? "DNS updated.", "success");
+});
+
+$settingsRegenerate.addEventListener("click", async () => {
+  const ok = await confirmDialog({
+    title: "Regenerate LiveKit credentials?",
+    message: "Rotates the LiveKit key/secret. The stack restarts and active listeners must reconnect.",
+    confirmLabel: "Regenerate",
+  });
+  if (!ok) return;
+  const res = await authedFetch("/api/admin/credentials/regenerate", { method: "POST" });
+  if (!res.ok) {
+    toast(`Failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  toast("Credentials rotated. Restart required.", "success");
+  await refreshRestartBanner();
+});
+
+$settingsReset.addEventListener("click", async () => {
+  const ok = await confirmDialog({
+    title: "Reset all event data?",
+    message: "Deletes all events, codes, languages, statistics and images. This cannot be undone.",
+    confirmLabel: "Reset data",
+  });
+  if (!ok) return;
+  const res = await authedFetch("/api/admin/reset", { method: "POST" });
+  if (!res.ok) {
+    toast(`Failed (HTTP ${res.status})`, "error");
+    return;
+  }
+  toast("Data reset. Restart required.", "success");
+  await refreshRestartBanner();
 });
 
 // ---- Default background ----------------------------------------------------

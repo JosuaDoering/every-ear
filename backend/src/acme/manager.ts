@@ -1,13 +1,25 @@
+// ACME/DNS-01 certificate issuance, moved from the desktop app into the backend
+// so it can be driven from the web admin (desktop and headless alike).
+//
+// Paths live under the backend data dir instead of Electron's userData.
+
 import { Client, forge, directory } from "acme-client";
 import type { Order, Authorization } from "acme-client";
 import dns from "node:dns";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { acmeAccountKeyPath, acmeCertsDir } from "./paths";
-import * as netcupDns from "./netcup-dns";
-import type { NetcupCreds } from "./netcup-dns";
+import { config } from "../config.js";
+import * as netcupDns from "./netcup.js";
+import type { NetcupCreds } from "./netcup.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function acmeCertsDir(): string {
+  return path.join(config.dataDir, "acme-certs");
+}
+function acmeAccountKeyPath(): string {
+  return path.join(config.dataDir, "acme-account.pem");
+}
 
 function extractZoneAndFqdn(domain: string): { zone: string; fqdn: string } {
   const parts = domain.split(".");
@@ -37,26 +49,29 @@ async function waitForDnsPropagation(
         onProgress(`DNS record visible (attempt ${attempt}). Continuing…`);
         return;
       }
-      onProgress(`Attempt ${attempt}/${maxAttempts}: record present but value not matching yet. Retrying in 60 s…`);
+      onProgress(`Attempt ${attempt}/${maxAttempts}: record present but value not matching yet. Retrying…`);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      const reason = code === "ENOTFOUND" || code === "ENODATA" ? "record not visible yet" : (err instanceof Error ? err.message : "DNS error");
-      onProgress(`Attempt ${attempt}/${maxAttempts}: ${reason}. Retrying soon…`);
+      const reason =
+        code === "ENOTFOUND" || code === "ENODATA"
+          ? "record not visible yet"
+          : err instanceof Error
+            ? err.message
+            : "DNS error";
+      onProgress(`Attempt ${attempt}/${maxAttempts}: ${reason}. Retrying…`);
     }
     if (attempt < maxAttempts) await sleep(intervalMs);
   }
-  throw new Error(`DNS record did not become visible in time. Double-check the TXT record at your DNS provider, then try again.`);
+  throw new Error(
+    "DNS record did not become visible in time. Double-check the TXT record at your DNS provider, then try again.",
+  );
 }
 
-// The exact DNS record the user must create when issuing manually. Mirrors what
-// the renderer shows in the "Other / manual" provider guide.
 export type ManualDnsChallenge = {
   recordType: "TXT";
   recordName: string;
   recordValue: string;
 };
-
-// Shared ACME plumbing -------------------------------------------------------
 
 async function createAcmeClient(): Promise<Client> {
   let accountKey: Buffer;
@@ -123,7 +138,6 @@ async function completeAndInstall(
   return { certFile, keyFile };
 }
 
-// Automatic issuance via the Netcup DNS API.
 export async function obtainCertificateViaNetcup(
   domain: string,
   creds: NetcupCreds,
@@ -158,10 +172,6 @@ export async function obtainCertificateViaNetcup(
   }
 }
 
-// Manual issuance: works with any DNS provider. The caller (settings UI) shows
-// the user the exact TXT record via `onChallenge`; we then poll public
-// resolvers until they create it, finish the order, and leave the record in
-// place for the user to delete afterwards.
 export async function obtainCertificateManual(
   domain: string,
   onProgress: (msg: string) => void,
@@ -179,7 +189,6 @@ export async function obtainCertificateManual(
     recordValue: prepared.txtValue,
   });
 
-  // Patient poll: 20 s × 30 = up to 10 min for the user to log in and add it.
   onProgress("Waiting for the TXT record to appear (checks every 20 s)…");
   await waitForDnsPropagation(prepared.fqdn, prepared.txtValue, onProgress, {
     intervalMs: 20_000,

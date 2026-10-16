@@ -34,6 +34,7 @@ import {
 } from "./languages.js";
 import { loadAiConfig, updateAiConfig, maskKey } from "./ai/config.js";
 import { statsForRoom } from "./stats.js";
+import { settingsApiPlugin } from "./settings-api.js";
 
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -400,4 +401,8 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     await clearGlobalBackground();
     return reply.code(204).send();
   });
+
+  // Web-admin settings, certificates, credentials and reset. Registered inside
+  // this plugin so it inherits the admin auth + rate-limit hooks.
+  await app.register(settingsApiPlugin);
 };

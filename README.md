@@ -78,7 +78,7 @@ A single LiveKit node caps at 600 participants per room by configuration. Exceed
 | Translator | The person speaking a translation into a phone/microphone. |
 | Listener | A guest listening on their own device. |
 | Admin | The person configuring the event and generating translator codes. |
-| Settings window | The application's control panel, opened from the menu bar/system tray. |
+| Web admin | The web interface at `http://127.0.0.1:<port>/admin.html`, which holds every setting. |
 
 ## Installation
 
@@ -98,18 +98,26 @@ The current releases are not code-signed, so the operating system shows a warnin
 
 ## Usage
 
+The desktop app is a background launcher: it starts the stack and opens the
+**web admin** in your browser at `http://127.0.0.1:<port>/admin.html`. There is
+no menu-bar icon or settings window — **all settings live in the web interface**,
+which is always reachable on the host itself, even without a network. The stack
+starts even when no LAN interface is available (the listener URL stays on
+loopback); as soon as an interface connects, Every Ear switches to that IP and
+the listener URL becomes reachable from other devices.
+
 ### First launch
 
-On first launch, Every Ear generates an admin password and shows it once. Copy it and store it somewhere safe. It is used to manage events. The application then runs from the menu bar (macOS) or system tray (Windows). Click its icon to open the **Settings window**.
-
-The admin password can be changed later in the Settings window under **Admin Password**.
+On first launch, Every Ear generates an admin password and shows it in a
+notification (and stores it in the settings file). Copy it and keep it safe. Open
+the web admin, sign in with it, and change it under **Settings → Admin password**.
 
 ### Running an event
 
 1. Connect the host to the event network (Ethernet recommended and WiFi turned off) and to power.
-2. Open the Settings window. Under **Connection** you'll find the **listener URL** and a QR code. If the host has more than one network, pick the right one from the **Network interface** dropdown, or leave it on **Auto**.
+2. Open the web admin (`http://127.0.0.1:<port>/admin.html`, or the listener URL with `/admin.html` appended). Under **Settings** you'll find the **listener URL**. If the host has more than one network, pick the right **Interface**, or leave it on the default.
 3. Share the listener URL or QR code with your guests (e.g. on a screen or printout).
-4. Generate a code for each translator: click **Open admin** in the app menu (or open the listener URL and append `/admin.html`), log in with the admin password, then create a code by choosing an event, a language, and a name. Events and languages are also managed here.
+4. Generate a code for each translator: in **Events**, create an event and a language, then add a translator code. Events, languages, codes, backgrounds and AI settings are all managed here.
 
 Translators open the translator URL via the QR code (or manually: listener URL with `/translator.html` appended), enter their 6-digit code, and allow microphone access when prompted.
 
@@ -140,22 +148,20 @@ A domain is required for trusted HTTPS, and registration is inexpensive (commonl
 
 ### Setting it up
 
-Open the Settings window. The **Certificate** tab covers the certificate itself, the **DNS** tab shows the record your domain needs and has the A-record update button, and the **Netcup** tab holds the Netcup API credentials. On the **Certificate** tab, enter your domain (e.g. `events.example.com`) in the **Domain** field, then choose an approach.
+Everything is done in the web admin under **Settings**. Enter your domain (e.g. `events.example.com`) in the **Domain** field, then choose an approach. Changing the certificate or domain applies live — Caddy is reloaded without a restart.
 
 #### Let's Encrypt (free, trusted)
 
-On the **Certificate** tab, select **Let's Encrypt** and pick a DNS provider.
-
-- **Netcup (automatic):** First, on the **Netcup** tab, enter your Netcup **Customer ID**, **API Key**, and **API Password** (created in the Netcup control panel under *Master data → API*). Then, on the **DNS** tab, click **Update A-record to this computer's IP** to point the domain at the host. Finally, on the **Certificate** tab, choose **Netcup** and click **Get certificate**. The app creates the validation record, waits for it to propagate, completes validation, installs the certificate, and removes the record.
-- **Other / manual:** The app shows the exact A and TXT records to create. Add the A record in your provider, click **Get certificate**, then add the TXT record it displays. Every Ear polls public DNS and finishes automatically once the record is visible (up to about ten minutes). The TXT record can be deleted afterwards.
+- **Netcup (automatic):** Under **Settings → Netcup DNS credentials**, enter your **Customer ID**, **API key**, and **API password** (created in the Netcup control panel under *Master data → API*). Then click **Update DNS A-record** to point the domain at the host, and **Get certificate (Netcup)**. Every Ear creates the validation record, waits for it to propagate, completes validation, installs the certificate, and removes the record. Certificates issued this way are **renewed automatically** in the background before they expire (configurable via `ACME_RENEW_BEFORE_DAYS` / `ACME_RENEW_CHECK_MS`); the **Renew now** button triggers a check immediately.
+- **Other / manual:** Click **Get certificate (manual DNS)**; Every Ear shows the exact TXT record to create, then polls public DNS and finishes automatically once it is visible (up to about ten minutes). The TXT record can be deleted afterwards. Manual and uploaded certificates are **not** auto-renewed.
 
 #### Own certificate
 
-If you already have a certificate (from your provider, your IT department, or a tool such as [Certbot](https://certbot.eff.org/) or [acme.sh](https://github.com/acmesh-official/acme.sh)), open the **Own Certificate** tab, select the PEM-encoded `cert.pem` and `key.pem` files, and click **Save & restart**. Point the A record at the host yourself; the **DNS** tab shows the required record. Use **Reset to internal CA** to return to the default self-signed setup.
+If you already have a certificate (from your provider, your IT department, or a tool such as [Certbot](https://certbot.eff.org/) or [acme.sh](https://github.com/acmesh-official/acme.sh)), open **Use an own certificate**, paste the PEM-encoded certificate and key, and click **Save certificate** (point the A record at the host yourself). Use **Reset to internal CA** to return to the default self-signed setup.
 
 ### Other providers
 
-The automatic path currently supports Netcup. With any other provider, use the **Other / manual** option for a free Let's Encrypt certificate, or supply your own certificate via the **Own Certificate** tab. The manual option works with any DNS provider.
+The automatic path currently supports Netcup. With any other provider, use the **manual DNS** option for a free Let's Encrypt certificate, or paste your own certificate. The manual option works with any DNS provider.
 
 ## Running on a Linux server (Debian)
 
@@ -167,26 +173,18 @@ A dedicated Linux machine (or VM) is the recommended host for large events: it r
 sudo ./scripts/install-debian.sh
 ```
 
-The installer builds the backend and frontend, downloads pinned LiveKit and Caddy binaries into `/opt/every-ear`, creates a dedicated unprivileged `every-ear` user, writes `/etc/every-ear/env`, installs three systemd units, applies `sysctl` tuning, and starts everything. It prints the listener URL and a freshly generated admin password.
+The installer builds the backend and frontend, downloads pinned LiveKit and Caddy binaries into `/opt/every-ear`, creates a dedicated unprivileged `every-ear` user, writes `/etc/every-ear/env` and `/var/lib/every-ear/settings.json`, installs three systemd units, applies `sysctl` tuning, and starts everything. It prints the local admin URL (`http://127.0.0.1:3000/admin.html`, where all settings live) and a freshly generated admin password.
 
 | Path | Purpose |
 |------|---------|
-| `/opt/every-ear` | Binaries, backend, built frontend, Caddyfile, `livekit.yaml` |
-| `/etc/every-ear/env` | Secrets and configuration (mode `0600`) |
-| `/var/lib/every-ear` | Events, codes, languages, stats, backgrounds |
+| `/opt/every-ear` | Binaries, backend, built frontend, `livekit.yaml` |
+| `/etc/every-ear/env` | Secrets/environment (mode `0600`) |
+| `/var/lib/every-ear` | `settings.json`, Caddyfile, events, codes, languages, stats, backgrounds |
 | `/var/log/every-ear` | Caddy access log (journald holds the rest) |
 
 The listener port defaults to **8443** (unprivileged, no root/CAP needed). Services are enabled on boot and restart automatically.
 
-**Trusted HTTPS without per-device warnings.** Set a `DOMAIN` and Netcup API credentials and the installer obtains a Let's Encrypt certificate via the DNS-01 challenge (no inbound port required), so listener devices show no certificate warning:
-
-```bash
-sudo DOMAIN=events.example.com \
-     NETCUP_CUSTOMER_ID=… NETCUP_API_KEY=… NETCUP_API_PASSWORD=… \
-     ./scripts/install-debian.sh
-```
-
-Point the domain's A record at the host's LAN IP (Netcup control panel or the app's DNS screen). Without a domain, Caddy uses its internal CA and each device must accept the certificate once. Renewal is automatic via `acme.sh` (it reloads Caddy after each renewal). Re-run `scripts/get-cert.sh` standalone to (re)issue a certificate later.
+**Trusted HTTPS without per-device warnings.** Open the web admin under **Settings**, enter your domain, add Netcup DNS credentials, click **Update DNS A-record**, then **Get certificate (Netcup)**. Let's Encrypt validates via DNS-01 (no inbound port required) and Caddy is reloaded live, so listener devices show no certificate warning. You can also paste an own certificate there. Without a domain, Caddy uses its internal CA and each device must accept the certificate once. A scripted alternative is `scripts/get-cert.sh` (acme.sh + Netcup).
 
 **Operating the stack:**
 
@@ -213,7 +211,7 @@ sudo PURGE=1 ./scripts/uninstall-debian.sh           # remove everything
 | A listener hears nothing | Tap play again. On iOS, audio only starts after a tap. |
 | The translator's microphone doesn't work | Allow microphone access for the browser. macOS: System Settings → Privacy & Security → Microphone. Windows: Settings → Privacy & security → Microphone. |
 | A device shows a security warning | Tap **Advanced → proceed anyway** (first connection only), or set up a trusted certificate (see *HTTPS and custom domain*). |
-| The Connection address shows "—" | The host is not on a usable network. Reconnect, click **Rescan**, and select the correct interface. |
+| The listener URL is blank or wrong | The host is not on a usable network, or the wrong interface is selected. Open **Settings** in the web admin, pick the correct **Interface**, and save. |
 | "Firewall is blocking livekit-server" (macOS) | Use the banner's **Open Firewall settings**, allow incoming connections for `livekit-server`, then **Re-check**. The banner's info button explains the details. |
 | Audio drops out | The network is likely overloaded. Use Ethernet between the host and the router and ensure the network can handle the number of listeners. |
 | The host's IP changed and the domain stopped working | Update the A record to the new IP. With Netcup, open the **DNS** tab and click **Update A-record to this computer's IP**. |
@@ -222,9 +220,7 @@ If a problem persists, quit Every Ear completely, reopen it, and run the event s
 
 ### Logs and data
 
-The Settings window's **Advanced** section can reveal the log folder, regenerate the internal LiveKit credentials, and reset all data (events, codes, languages, backgrounds, and credentials — this cannot be undone).
-
-Application data is stored at:
+The web admin under **Settings** lets you change the admin password, choose the network interface, manage the HTTPS certificate and DNS, regenerate the internal LiveKit credentials, and reset event data. Application data is stored at:
 
 - **macOS:** `~/Library/Application Support/every-ear/`
 - **Windows:** `%APPDATA%\every-ear\`

@@ -14,6 +14,7 @@
         <div class="admin-header-actions">
           <button id="open-languages" class="ghost"><span>Languages</span></button>
           <button id="open-ai-settings" class="ghost"><span>AI settings</span></button>
+          <button id="open-settings" class="ghost"><span>Settings</span></button>
           <button id="admin-logout" class="ghost"><span>Sign out</span></button>
         </div>
       </header>
@@ -309,6 +310,181 @@
             <button type="submit" id="ai-submit" class="primary"><span>Save AI settings</span></button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Settings modal -->
+    <div id="settings-modal-backdrop" class="modal-backdrop" hidden>
+      <div class="modal wide" role="dialog" aria-labelledby="settings-modal-title" aria-modal="true">
+        <header class="modal-header">
+          <div class="modal-header-text">
+            <h2 id="settings-modal-title">Settings</h2>
+            <p class="hint">
+              Everything is configured here and applies immediately. This page is
+              always reachable on the host itself, even without a network.
+            </p>
+          </div>
+          <button type="button" id="settings-modal-close" class="modal-close" aria-label="Close">×</button>
+        </header>
+
+        <div class="modal-body">
+          <div id="settings-restart-banner" class="restart-banner" hidden>
+            <strong>Restart required.</strong>
+            <span>
+              LiveKit credentials or the network interface changed. The desktop app
+              restarts automatically; on a server run
+              <code>sudo systemctl restart 'every-ear-*'</code>.
+            </span>
+          </div>
+
+          <div class="admin-subblock">
+            <h3>Access</h3>
+            <div class="settings-kv">
+              <div class="settings-kv-row">
+                <span>This admin page</span>
+                <code id="settings-local-url"></code>
+                <button type="button" class="ghost small" id="settings-copy-local"><span>Copy</span></button>
+              </div>
+              <div class="settings-kv-row">
+                <span>Listener URL</span>
+                <code id="settings-listener-url"></code>
+                <button type="button" class="ghost small" id="settings-copy-listener"><span>Copy</span></button>
+              </div>
+              <div class="settings-kv-row">
+                <span>LiveKit</span>
+                <span id="settings-livekit-state" class="hint"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="admin-subblock">
+            <h3>Admin password</h3>
+            <form id="settings-password-form" class="row-stack">
+              <label>
+                New password
+                <input id="settings-password" type="password" autocomplete="new-password" />
+              </label>
+              <button type="submit" class="primary small self-start" id="settings-password-submit">
+                <span>Change password</span>
+              </button>
+            </form>
+          </div>
+
+          <div class="admin-subblock">
+            <h3>Network</h3>
+            <p class="hint">
+              Choose the network interface listeners connect to. Changing the
+              interface restarts the stack.
+            </p>
+            <div class="row">
+              <label>
+                Interface
+                <select id="settings-interface" aria-label="Network interface"></select>
+              </label>
+              <label>
+                Listener port
+                <input id="settings-port" type="number" min="1" max="65535" />
+              </label>
+            </div>
+            <button type="button" class="primary small self-start" id="settings-network-save">
+              <span>Save network</span>
+            </button>
+          </div>
+
+          <div class="admin-subblock">
+            <h3>HTTPS certificate</h3>
+            <p class="hint">
+              By default Caddy uses an internal certificate, which each device must
+              accept once. With a domain + Let's Encrypt, guests see no warning.
+            </p>
+            <label>
+              Domain
+              <input id="settings-domain" type="text" placeholder="events.example.com" autocomplete="off" />
+            </label>
+            <div class="row wrap">
+              <button type="button" class="secondary small" id="settings-cert-netcup">
+                <span>Get certificate (Netcup)</span>
+              </button>
+              <button type="button" class="secondary small" id="settings-cert-manual">
+                <span>Get certificate (manual DNS)</span>
+              </button>
+              <button type="button" class="secondary small" id="settings-dns-update">
+                <span>Update DNS A-record</span>
+              </button>
+              <button type="button" class="secondary small" id="settings-cert-reset">
+                <span>Reset to internal CA</span>
+              </button>
+            </div>
+            <details class="settings-owncert">
+              <summary>Use an own certificate</summary>
+              <label>
+                Certificate (PEM)
+                <textarea id="settings-cert-pem" rows="3" spellcheck="false"></textarea>
+              </label>
+              <label>
+                Private key (PEM)
+                <textarea id="settings-key-pem" rows="3" spellcheck="false"></textarea>
+              </label>
+              <button type="button" class="primary small self-start" id="settings-cert-own">
+                <span>Save certificate</span>
+              </button>
+            </details>
+            <div id="settings-cert-status" class="hint"></div>
+            <div class="settings-kv-row" style="margin-top: var(--space-2);">
+              <span>Auto-renew</span>
+              <span id="settings-cert-autorenew" class="hint"></span>
+              <button type="button" class="secondary small" id="settings-cert-renew">
+                <span>Renew now</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="admin-subblock">
+            <h3>Netcup DNS credentials</h3>
+            <p class="hint">Used for automatic certificate issuance and A-record updates.</p>
+            <label>
+              Customer ID
+              <input id="settings-netcup-customer" type="text" autocomplete="off" />
+            </label>
+            <label>
+              API key
+              <input id="settings-netcup-key" type="password" placeholder="leave blank to keep" autocomplete="off" />
+            </label>
+            <label>
+              API password
+              <input id="settings-netcup-password" type="password" placeholder="leave blank to keep" autocomplete="off" />
+            </label>
+            <button type="button" class="primary small self-start" id="settings-netcup-save">
+              <span>Save Netcup credentials</span>
+            </button>
+          </div>
+
+          <div class="danger-zone">
+            <div class="danger-zone-text">
+              <strong>Regenerate LiveKit credentials</strong>
+              <p class="hint">
+                Rotates the LiveKit key/secret and restarts the stack. Active
+                listeners must reconnect.
+              </p>
+            </div>
+            <button type="button" class="danger" id="settings-regenerate">
+              <span>Regenerate</span>
+            </button>
+          </div>
+
+          <div class="danger-zone">
+            <div class="danger-zone-text">
+              <strong>Reset event data</strong>
+              <p class="hint">
+                Deletes all events, codes, languages, statistics and images.
+                Credentials and settings are kept. Restarts the stack.
+              </p>
+            </div>
+            <button type="button" class="danger" id="settings-reset">
+              <span>Reset data</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

@@ -1963,3 +1963,67 @@ button.is-loading.danger.outline::after {
 .ai-channel-state[data-state="error"] {
   color: var(--danger, #c0392b);
 }
+
+/* ---- Admin settings modal ------------------------------------------------- */
+
+.restart-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-2, 8px);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 40%, transparent);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-4);
+}
+
+.restart-banner code {
+  font-size: 0.85em;
+}
+
+.settings-kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-kv-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.settings-kv-row > span:first-child {
+  min-width: 9rem;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.settings-kv-row code {
+  word-break: break-all;
+}
+
+.row.wrap {
+  flex-wrap: wrap;
+}
+
+.settings-owncert {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-owncert summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.settings-owncert textarea {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8em;
+}

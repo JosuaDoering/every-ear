@@ -1,8 +1,12 @@
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
-import { promises as fs } from "node:fs";
+import fastifyStatic from "@fastify/static";
+import { promises as fs, existsSync } from "node:fs";
+import path from "node:path";
 import { config } from "./config.js";
+import { ensureSettingsFile, getSettings, writeLivekitEnv } from "./settings.js";
+import { writeCaddyfile, reloadCaddy } from "./caddy.js";
 import { listenerToken, translatorToken, aiPublisherToken } from "./tokens.js";
 import { getCode, listCodes, markUsed } from "./codes.js";
 import { getEvent, listActiveEvents, listEvents } from "./events.js";
@@ -18,6 +22,7 @@ import {
   isLiveKitReachable,
   handleWebhook,
 } from "./stats.js";
+import { startCertRenewal } from "./acme/renewal.js";
 import { loadAiConfig } from "./ai/config.js";
 import { translateStream, type TranslateError } from "./ai/translate.js";
 
@@ -307,15 +312,52 @@ async function start() {
   registerBackgroundRoutes(app);
   await app.register(adminPlugin, { prefix: "/api/admin" });
 
+  // Serve the built web UI directly from the backend so the admin interface is
+  // always reachable on the loopback port (http://127.0.0.1:<port>/), even if
+  // Caddy or LiveKit are down or the LAN address changed.
+  if (existsSync(config.frontendDist)) {
+    await app.register(fastifyStatic, {
+      root: config.frontendDist,
+      prefix: "/",
+      index: ["index.html"],
+    });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.method === "GET" && !req.url.startsWith("/api/")) {
+        return reply.type("text/html").sendFile("index.html");
+      }
+      return reply.code(404).send({ error: "not found" });
+    });
+  }
+
   // Trigger the codes-file migration on boot so listeners can see the
   // auto-created default event without first hitting an admin route.
   await listCodes();
 
+  // Seed/refresh the settings file and write the Caddyfile before accepting
+  // traffic, so the launcher can start Caddy pointing at it.
+  const settings = ensureSettingsFile();
+  if (!settings.livekitApiKey || !settings.livekitApiSecret) {
+    app.log.error(
+      "LiveKit API key/secret missing — set them via the web admin or LIVEKIT_API_KEY/SECRET.",
+    );
+  }
+  // Keep the systemd-readable LiveKit env in sync with the settings file, and
+  // clear any stale restart marker (we just booted = the restart happened).
+  writeLivekitEnv();
+  await fs.rm(path.join(config.dataDir, ".restart-requested"), { force: true });
+  writeCaddyfile();
+
   await app.listen({ port: config.port, host: "127.0.0.1" });
+
+  // Reload Caddy if it's already up (best-effort; the file was written above).
+  void reloadCaddy();
 
   // Begin polling LiveKit for per-channel listener/broadcast stats. Runs in the
   // background; failures (e.g. LiveKit not up yet) are retried on each tick.
   void startStatsCollector();
+
+  // Keep Netcup-issued certificates fresh (boot check + periodic renewal).
+  startCertRenewal();
 
   // Graceful shutdown: systemd (or Ctrl-C) sends SIGTERM. Stop accepting work,
   // drain in-flight requests, then exit so no event is disturbed mid-restart.

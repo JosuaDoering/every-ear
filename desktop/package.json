@@ -6,9 +6,7 @@
   "main": "build/main.js",
   "scripts": {
     "build:tsc": "tsc -p tsconfig.json",
-    "build:renderer": "esbuild renderer/settings.ts --bundle --outfile=build/renderer/settings.js --format=esm --target=es2022 --platform=browser",
-    "build:assets": "node scripts/copy-renderer-assets.mjs",
-    "build": "npm run build:tsc && npm run build:renderer && npm run build:assets",
+    "build": "npm run build:tsc",
     "dev": "npm run build && electron .",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
@@ -18,7 +16,6 @@
     "release:linux": "electron-builder --linux --publish always"
   },
   "dependencies": {
-    "acme-client": "^5.4.0",
     "electron-updater": "^6.3.9"
   },
   "devDependencies": {

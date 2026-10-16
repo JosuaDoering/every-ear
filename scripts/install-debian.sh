@@ -140,31 +140,37 @@ cp -a "$REPO_DIR/backend/node_modules" "$INSTALL_DIR/backend/node_modules"
 rm -rf "$INSTALL_DIR/frontend/dist"
 cp -a "$REPO_DIR/frontend/dist" "$INSTALL_DIR/frontend/dist"
 
-# ---- optional trusted certificate (DNS-01) ---------------------------------
-# Must run before the Caddyfile is written so the generated config can point at
-# the real certificate (otherwise it bakes in `tls internal`).
-if [ -n "$DOMAIN" ]; then
-  if [ -f "$TLS_DIR/fullchain.pem" ]; then
-    log "Trusted certificate already present for $DOMAIN — reusing it."
-  elif [ -n "${NETCUP_CUSTOMER_ID:-}" ] && [ -n "${NETCUP_API_KEY:-}" ] && [ -n "${NETCUP_API_PASSWORD:-}" ]; then
-    log "Obtaining a trusted certificate for $DOMAIN via Netcup DNS-01…"
-    DOMAIN="$DOMAIN" TLS_DIR="$TLS_DIR" SERVICE_USER="$SERVICE_USER" \
-      "$REPO_DIR/scripts/get-cert.sh" || warn "Certificate issuance failed — falling back to internal TLS for now."
-  else
-    warn "DOMAIN=$DOMAIN set but no Netcup credentials and no existing certificate."
-    warn "Run scripts/get-cert.sh later, or set NETCUP_* and re-run the installer."
-  fi
-fi
+# ---- settings.json ---------------------------------------------------------
+# The backend owns settings.json (shared with the desktop app). Seeding it here
+# means the admin can immediately use the web interface, and a domain/Netcup
+# credentials provided at install time are available for certificate issuance.
+log "Writing $DATA_DIR/settings.json"
+{
+  echo "{"
+  echo "  \"adminPassword\": \"${ADMIN_PASSWORD}\","
+  echo "  \"listenerPort\": ${LISTENER_PORT},"
+  echo "  \"livekitApiKey\": \"${LIVEKIT_API_KEY}\","
+  echo "  \"livekitApiSecret\": \"${LIVEKIT_API_SECRET}\","
+  echo "  \"languages\": \"${LANGUAGES:-en,de,fr,es}\","
+  echo "  \"preferredInterface\": null,"
+  echo "  \"publicHost\": \"${PUBLIC_HOST}\","
+  echo "  \"customDomain\": $( [ -n "$DOMAIN" ] && echo "\"${DOMAIN}\"" || echo "null" ),"
+  echo "  \"customCertFile\": null,"
+  echo "  \"customKeyFile\": null,"
+  echo "  \"netcupCustomerId\": $( [ -n "${NETCUP_CUSTOMER_ID:-}" ] && echo "\"${NETCUP_CUSTOMER_ID}\"" || echo "null" ),"
+  echo "  \"netcupApiKey\": $( [ -n "${NETCUP_API_KEY:-}" ] && echo "\"${NETCUP_API_KEY}\"" || echo "null" ),"
+  echo "  \"netcupApiPassword\": $( [ -n "${NETCUP_API_PASSWORD:-}" ] && echo "\"${NETCUP_API_PASSWORD}\"" || echo "null" ),"
+  echo "  \"createdAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  echo "}"
+} > "$DATA_DIR/settings.json"
+chmod 0600 "$DATA_DIR/settings.json"
 
-# ---- Caddyfile -------------------------------------------------------------
-if [ -n "$DOMAIN" ] && [ -f "$TLS_DIR/fullchain.pem" ] && [ -f "$TLS_DIR/privkey.pem" ]; then
-  TLS_LINE="tls $TLS_DIR/fullchain.pem $TLS_DIR/privkey.pem"
-  CADDY_HOST="$DOMAIN"
-else
-  TLS_LINE="tls internal"
-  CADDY_HOST="$PUBLIC_HOST"
-fi
-log "Writing $INSTALL_DIR/Caddyfile (host=${CADDY_HOST}, tls=${TLS_LINE%% *})"
+# ---- initial Caddyfile -----------------------------------------------------
+# The backend rewrites this on boot and on every settings change; this seed just
+# lets Caddy start immediately. Certificate management happens in the web admin.
+TLS_LINE="tls internal"
+CADDY_HOST="${DOMAIN:-$PUBLIC_HOST}"
+log "Writing $DATA_DIR/Caddyfile (host=${CADDY_HOST}, tls internal)"
 sed \
   -e "s#__PUBLIC_HOST__#${CADDY_HOST}#g" \
   -e "s#__LISTENER_PORT__#${LISTENER_PORT}#g" \
@@ -173,7 +179,7 @@ sed \
   -e "s#__DATA_DIR__#${DATA_DIR}#g" \
   -e "s#__LOG_DIR__#${LOG_DIR}#g" \
   -e "s#__TLS__#${TLS_LINE}#g" \
-  "$REPO_DIR/deploy/Caddyfile.tmpl" > "$INSTALL_DIR/Caddyfile"
+  "$REPO_DIR/deploy/Caddyfile.tmpl" > "$DATA_DIR/Caddyfile"
 
 # ---- environment file ------------------------------------------------------
 log "Writing $CONFIG_DIR/env"
@@ -186,6 +192,9 @@ log "Writing $CONFIG_DIR/env"
   echo "BACKEND_PORT=${BACKEND_PORT}"
   echo "ADMIN_PASSWORD=${ADMIN_PASSWORD}"
   echo "EVERY_EAR_DATA_DIR=${DATA_DIR}"
+  echo "EVERY_EAR_LOG_DIR=${LOG_DIR}"
+  echo "FRONTEND_DIST=${INSTALL_DIR}/frontend/dist"
+  echo "EVERY_EAR_MANAGE_CADDY=1"
   echo "EVERY_EAR_DEFAULT_BG=${INSTALL_DIR}/frontend/dist/bg.jpg"
   echo "LIVEKIT_WEBHOOK_API_KEY=${LIVEKIT_API_KEY}"
   echo "LIVEKIT_WEBHOOK_URLS=http://127.0.0.1:${BACKEND_PORT}/api/livekit/webhook"
@@ -205,6 +214,7 @@ for unit in every-ear-livekit every-ear-backend every-ear-caddy; do
   sed -e "s#/usr/bin/node#${NODE_BIN}#g" \
       -e "s#/opt/every-ear#${INSTALL_DIR}#g" \
       -e "s#/etc/every-ear#${CONFIG_DIR}#g" \
+      -e "s#/var/lib/every-ear#${DATA_DIR}#g" \
       "$REPO_DIR/deploy/systemd/${unit}.service" > "/etc/systemd/system/${unit}.service"
 done
 systemctl daemon-reload
@@ -231,10 +241,11 @@ cat <<EOF
 ✓ Every Ear installed.
 
   Listener URL : https://${DOMAIN:-$PUBLIC_HOST}:${LISTENER_PORT}/
-  Admin URL    : https://${DOMAIN:-$PUBLIC_HOST}:${LISTENER_PORT}/admin.html
+  Admin (web)  : http://127.0.0.1:${BACKEND_PORT}/admin.html   ← all settings live here
+  Admin (LAN)  : https://${DOMAIN:-$PUBLIC_HOST}:${LISTENER_PORT}/admin.html
   Admin pass   : $ADMIN_PASSWORD
 
-  Config       : $CONFIG_DIR/env
+  Config       : $CONFIG_DIR/env  (settings: $DATA_DIR/settings.json)
   Data         : $DATA_DIR
   Logs         : journalctl -u every-ear-backend -f
 

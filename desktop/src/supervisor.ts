@@ -1,67 +1,55 @@
-// Supervises the three child processes: livekit-server, the Fastify backend,
-// and Caddy. Ports the patterns from scripts/dev.mjs (cross-platform spawn,
-// per-line log piping, taskkill-on-Windows teardown) but resolves binaries
-// from paths.ts and runs the backend through `ELECTRON_RUN_AS_NODE`.
+// Supervises the three child processes: the Fastify backend, livekit-server and
+// Caddy. The backend is started first — it owns the runtime Caddyfile and
+// settings — then LiveKit and Caddy. Ports the patterns from scripts/dev.mjs
+// (cross-platform spawn, per-line log piping, taskkill-on-Windows teardown).
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createWriteStream, renameSync, rmSync, statSync, writeFileSync, type WriteStream } from "node:fs";
+import { createWriteStream, renameSync, rmSync, statSync, type WriteStream } from "node:fs";
 import path from "node:path";
+import { loadSettings } from "./config-store";
 import {
   backendCwd,
   backendEntry,
   binaryPath,
-  caddyStorageDir,
   defaultBackgroundPath,
   frontendDist,
-  generatedCaddyfilePath,
   livekitConfigPath,
   logDir,
 } from "./paths";
 
 export type SupervisorEnv = {
-  livekitApiKey: string;
-  livekitApiSecret: string;
-  adminPassword: string;
+  /** LAN address listeners connect to (also LiveKit's node-ip). */
   publicHost: string;
   /** TCP port Caddy binds for the listener-facing HTTPS server. */
   listenerPort: number;
-  languages: string;
   dataDir: string;
-  /** Optional custom domain for the Caddy host binding (overrides publicHost). */
-  customDomain: string | null;
-  /** Path to a PEM TLS certificate file; paired with customKeyFile. */
-  customCertFile: string | null;
-  /** Path to a PEM TLS private key file; paired with customCertFile. */
-  customKeyFile: string | null;
 };
 
 export type SupervisorStatus = "stopped" | "starting" | "running" | "stopping";
 
+type ProcName = "backend" | "livekit" | "caddy";
+
 type ProcSpec = {
-  name: "livekit" | "backend" | "caddy";
+  name: ProcName;
   cmd: string;
   args: string[];
   cwd: string;
   shell: boolean;
 };
 
+const BACKEND_PORT = Number(process.env.BACKEND_PORT ?? 3000);
+
 const STATE = {
   status: "stopped" as SupervisorStatus,
-  children: [] as Array<{ name: ProcSpec["name"]; child: ChildProcess }>,
+  children: [] as Array<{ name: ProcName; child: ChildProcess }>,
   logStreams: [] as WriteStream[],
-  // Per-child restart accounting for bounded auto-restart. A rolling window
-  // caps how many restarts are attempted before we give up and surface a
-  // fatal crash, so a persistently failing child can't loop forever.
-  restarts: new Map<ProcSpec["name"], { count: number; windowStart: number }>(),
-  // The most recent env used to start, so a child can be re-spawned without
-  // forcing the caller to pass env again.
+  // Per-child restart accounting for bounded auto-restart.
+  restarts: new Map<ProcName, { count: number; windowStart: number }>(),
   env: null as SupervisorEnv | null,
   restartTimers: new Set<NodeJS.Timeout>(),
 };
 
-// Bounded auto-restart policy: at most MAX_RESTARTS within WINDOW_MS per
-// child, with exponential backoff. After that the crash is treated as fatal.
 const MAX_RESTARTS = 5;
 const RESTART_WINDOW_MS = 5 * 60 * 1000;
 const RESTART_BASE_MS = 1000;
@@ -72,94 +60,6 @@ export function status(): SupervisorStatus {
   return STATE.status;
 }
 
-function generateCaddyfileContent(env: SupervisorEnv): string {
-  const port = env.listenerPort;
-  const dist = frontendDist().replace(/\\/g, "/");
-  const storage = caddyStorageDir().replace(/\\/g, "/");
-  const customDomain = env.customDomain?.trim();
-  const hasCustomCert = Boolean(env.customCertFile && env.customKeyFile);
-
-  // Site blocks: when a custom domain + cert are configured, we keep that as
-  // the primary block (real TLS for the domain) and add a second block for
-  // direct LAN-IP access using Caddy's internal CA. Without that second
-  // block, https://<lan-ip>:8443/ fails the TLS handshake because Caddy
-  // has no matching server-block for the IP host header.
-  const lines: string[] = [];
-  // Shared access log so we can see incoming requests with source IP — vital
-  // when diagnosing "can't reach the server" issues from client devices.
-  const accessLog = [
-    `\tlog {`,
-    `\t\toutput file "${path.join(logDir(), "access.log").replace(/\\/g, "/")}" {`,
-    `\t\t\troll_size 10mb`,
-    `\t\t\troll_keep 3`,
-    `\t\t}`,
-    `\t}`,
-  ];
-
-  lines.push(
-    // Global options: redirect Caddy's PKI/cert storage into our userData,
-    // never share with a system Caddy install. Also disable HTTP/3 — its
-    // UDP transport gets blocked or mishandled by carrier NATs, captive
-    // portals, and event WiFi firewalls, producing ERR_QUIC_PROTOCOL_ERROR
-    // on clients with no clean TCP fallback.
-    `{`,
-    `\tstorage file_system {`,
-    `\t\troot "${storage}"`,
-    `\t}`,
-    `\tservers {`,
-    `\t\tprotocols h1 h2`,
-    `\t}`,
-    `}`,
-    ``,
-    // Shared handlers — every site block imports this.
-    `(handlers) {`,
-    `\thandle_path /livekit/* {`,
-    `\t\treverse_proxy localhost:7880`,
-    `\t}`,
-    `\thandle /api/* {`,
-    `\t\treverse_proxy localhost:3000`,
-    `\t}`,
-    `\thandle {`,
-    `\t\troot * "${dist}"`,
-    `\t\ttry_files {path} /index.html`,
-    `\t\tfile_server`,
-    `\t}`,
-    `}`,
-    ``,
-  );
-
-  if (customDomain && hasCustomCert) {
-    const certFile = env.customCertFile!.replace(/\\/g, "/");
-    const keyFile = env.customKeyFile!.replace(/\\/g, "/");
-    lines.push(
-      `${customDomain}:${port}, localhost:${port} {`,
-      `\ttls "${certFile}" "${keyFile}"`,
-      `\timport handlers`,
-      ...accessLog,
-      `}`,
-      ``,
-      `${env.publicHost}:${port} {`,
-      `\ttls internal`,
-      `\timport handlers`,
-      ...accessLog,
-      `}`,
-      ``,
-    );
-  } else {
-    const host = customDomain || env.publicHost;
-    lines.push(
-      `${host}:${port}, ${env.publicHost}:${port}, localhost:${port} {`,
-      `\ttls internal`,
-      `\timport handlers`,
-      ...accessLog,
-      `}`,
-      ``,
-    );
-  }
-
-  return lines.join("\n");
-}
-
 export async function start(env: SupervisorEnv): Promise<void> {
   if (STATE.status !== "stopped") {
     throw new Error(`supervisor.start: already ${STATE.status}`);
@@ -168,18 +68,19 @@ export async function start(env: SupervisorEnv): Promise<void> {
   STATE.status = "starting";
   events.emit("status", STATE.status);
 
-  writeFileSync(generatedCaddyfilePath(), generateCaddyfileContent(env), "utf8");
+  const specs = buildSpecs(env);
 
-  const procs = buildSpecs(env);
+  // Backend first — it writes the Caddyfile that Caddy will load.
+  const backendSpec = specs.find((s) => s.name === "backend")!;
+  STATE.children.push({ name: "backend", child: spawnChild(backendSpec, env) });
+  await waitForBackend();
 
-  for (const spec of procs) {
-    const child = spawnChild(spec, env);
-    STATE.children.push({ name: spec.name, child });
-    // Small gap between starts — Caddy benefits from livekit + backend being
-    // up first, but blocking on log lines makes the code fragile. 250ms is
-    // plenty for a same-host startup race in practice.
-    await sleep(250);
-  }
+  const livekitSpec = specs.find((s) => s.name === "livekit")!;
+  STATE.children.push({ name: "livekit", child: spawnChild(livekitSpec, env) });
+  await sleep(250);
+
+  const caddySpec = specs.find((s) => s.name === "caddy")!;
+  STATE.children.push({ name: "caddy", child: spawnChild(caddySpec, env) });
 
   STATE.status = "running";
   events.emit("status", STATE.status);
@@ -190,16 +91,14 @@ export async function stop(): Promise<void> {
   STATE.status = "stopping";
   events.emit("status", STATE.status);
 
-  // Reverse order: caddy first, then backend, then livekit.
+  // Reverse order: caddy, livekit, backend.
   for (const entry of [...STATE.children].reverse()) {
     killChild(entry.name, entry.child);
   }
 
-  // Cancel any pending auto-restart timers so they don't fire after stop.
   for (const t of STATE.restartTimers) clearTimeout(t);
   STATE.restartTimers.clear();
 
-  // Give the children a brief grace period to exit cleanly.
   await sleep(1500);
 
   STATE.children = [];
@@ -216,7 +115,16 @@ export async function restart(env: SupervisorEnv): Promise<void> {
 }
 
 function buildSpecs(env: SupervisorEnv): ProcSpec[] {
+  const s = loadSettings();
+  const caddyfile = path.join(env.dataDir, "Caddyfile");
   return [
+    {
+      name: "backend",
+      cmd: process.execPath,
+      args: [backendEntry()],
+      cwd: backendCwd(),
+      shell: false,
+    },
     {
       name: "livekit",
       cmd: binaryPath("livekit-server"),
@@ -226,22 +134,15 @@ function buildSpecs(env: SupervisorEnv): ProcSpec[] {
         "--node-ip",
         env.publicHost,
         "--keys",
-        `${env.livekitApiKey}: ${env.livekitApiSecret}`,
+        `${s.livekitApiKey}: ${s.livekitApiSecret}`,
       ],
-      cwd: backendCwd(),
-      shell: false,
-    },
-    {
-      name: "backend",
-      cmd: process.execPath,
-      args: [backendEntry()],
       cwd: backendCwd(),
       shell: false,
     },
     {
       name: "caddy",
       cmd: binaryPath("caddy"),
-      args: ["run", "--config", generatedCaddyfilePath(), "--adapter", "caddyfile"],
+      args: ["run", "--config", caddyfile, "--adapter", "caddyfile"],
       cwd: backendCwd(),
       shell: false,
     },
@@ -249,30 +150,32 @@ function buildSpecs(env: SupervisorEnv): ProcSpec[] {
 }
 
 function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
+  const s = loadSettings();
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    LIVEKIT_API_KEY: env.livekitApiKey,
-    LIVEKIT_API_SECRET: env.livekitApiSecret,
-    ADMIN_PASSWORD: env.adminPassword,
-    BACKEND_PORT: "3000",
+    LIVEKIT_API_KEY: s.livekitApiKey,
+    LIVEKIT_API_SECRET: s.livekitApiSecret,
+    ADMIN_PASSWORD: s.adminPassword,
+    BACKEND_PORT: String(BACKEND_PORT),
     LISTENER_PORT: String(env.listenerPort),
     PUBLIC_HOST: env.publicHost,
     LIVEKIT_NODE_IP: env.publicHost,
-    LANGUAGES: env.languages,
+    LANGUAGES: s.languages,
     EVERY_EAR_DATA_DIR: env.dataDir,
+    EVERY_EAR_LOG_DIR: logDir(),
     EVERY_EAR_DEFAULT_BG: defaultBackgroundPath(),
     FRONTEND_DIST: frontendDist(),
-    // LiveKit webhooks → backend stats collector (harmless for other children).
-    LIVEKIT_WEBHOOK_API_KEY: env.livekitApiKey,
-    LIVEKIT_WEBHOOK_URLS: "http://127.0.0.1:3000/api/livekit/webhook",
+    // The backend owns and live-reloads Caddy's config (desktop launcher).
+    EVERY_EAR_MANAGE_CADDY: "1",
+    // LiveKit webhooks → backend stats collector.
+    LIVEKIT_WEBHOOK_API_KEY: s.livekitApiKey,
+    LIVEKIT_WEBHOOK_URLS: `http://127.0.0.1:${BACKEND_PORT}/api/livekit/webhook`,
   };
 
   // The backend runs under the Electron binary as a plain Node process.
   if (spec.name === "backend") {
     childEnv.ELECTRON_RUN_AS_NODE = "1";
   }
-
-  // On Windows we set both Path and PATH to be safe.
   if (process.platform === "win32" && childEnv.PATH) {
     childEnv.Path = childEnv.PATH;
   }
@@ -280,7 +183,7 @@ function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
   const child = spawn(spec.cmd, spec.args, {
     cwd: spec.cwd,
     env: childEnv,
-    shell: spec.shell || (process.platform === "win32" && spec.name === "backend" ? false : false),
+    shell: spec.shell,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -309,10 +212,6 @@ function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
   child.on("exit", (code, signal) => {
     events.emit("exit", { name: spec.name, code, signal });
     if (STATE.status !== "running") return; // expected exit during stop/restart
-
-    // Unexpected crash. Try a bounded auto-restart with backoff so transient
-    // failures (e.g. LiveKit choking on a malformed packet) recover on their
-    // own. If the child keeps dying we stop trying and surface a fatal crash.
     scheduleRestart(spec, env);
   });
 
@@ -326,8 +225,6 @@ function scheduleRestart(spec: ProcSpec, env: SupervisorEnv): void {
     acct = { count: 0, windowStart: now };
     STATE.restarts.set(spec.name, acct);
   }
-  // Reset the window once it has elapsed, so a child that crashed a few times
-  // during an event and then stabilised isn't permanently near the cap.
   if (now - acct.windowStart > RESTART_WINDOW_MS) {
     acct.count = 0;
     acct.windowStart = now;
@@ -335,7 +232,6 @@ function scheduleRestart(spec: ProcSpec, env: SupervisorEnv): void {
   acct.count++;
 
   if (acct.count > MAX_RESTARTS) {
-    // Too many restarts within the window — treat as fatal and stop trying.
     events.emit("crash", {
       name: spec.name,
       code: null,
@@ -358,8 +254,7 @@ function scheduleRestart(spec: ProcSpec, env: SupervisorEnv): void {
 
   const timer = setTimeout(() => {
     STATE.restartTimers.delete(timer);
-    if (STATE.status !== "running") return; // stopped while we were waiting
-    // Replace the dead child entry with a fresh process.
+    if (STATE.status !== "running") return;
     const idx = STATE.children.findIndex((c) => c.name === spec.name);
     if (idx < 0) return;
     const child = spawnChild(spec, env);
@@ -368,11 +263,7 @@ function scheduleRestart(spec: ProcSpec, env: SupervisorEnv): void {
   STATE.restartTimers.add(timer);
 }
 
-function makeLineSink(
-  name: string,
-  logStream: WriteStream,
-  channel: "stdout" | "stderr",
-) {
+function makeLineSink(name: string, logStream: WriteStream, channel: "stdout" | "stderr") {
   let buf = "";
   return (chunk: Buffer | string) => {
     buf += chunk.toString();
@@ -386,13 +277,10 @@ function makeLineSink(
   };
 }
 
-function killChild(_name: ProcSpec["name"], child: ChildProcess): void {
+function killChild(_name: ProcName, child: ChildProcess): void {
   if (!child || child.killed) return;
   try {
     if (process.platform === "win32" && typeof child.pid === "number") {
-      // npm / shell wrappers leave grandchildren behind on Windows. taskkill
-      // /T tears down the whole tree; /F is a hard kill but we already gave
-      // the OS a beat with the grace sleep above.
       spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
         stdio: "ignore",
         windowsHide: true,
@@ -403,6 +291,22 @@ function killChild(_name: ProcSpec["name"], child: ChildProcess): void {
   } catch {
     // ignore
   }
+}
+
+async function waitForBackend(timeoutMs = 12_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const url = `http://127.0.0.1:${BACKEND_PORT}/api/health`;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {
+      // not up yet
+    }
+    await sleep(250);
+  }
+  // Proceed anyway — Caddy will retry and the backend crash handler will catch
+  // a genuinely broken backend.
 }
 
 function sleep(ms: number): Promise<void> {

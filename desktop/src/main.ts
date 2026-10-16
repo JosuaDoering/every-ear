@@ -1,313 +1,87 @@
-// Entry point: app lifecycle, single-instance lock, supervisor wiring,
-// tray + settings window, IP-change watcher.
+// Every Ear launcher. A headless background service: it starts the Fastify
+// backend, LiveKit and Caddy, then opens the web admin in the default browser.
+// There is no tray icon and no settings window — every setting lives in the web
+// interface, which is always reachable at http://127.0.0.1:<port>/admin.html.
 
-import { Notification, app, clipboard, dialog, shell } from "electron";
-import { rmSync } from "node:fs";
+import { Notification, app, shell } from "electron";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
-import { bootstrap, regenerateLiveKitCredentials } from "./bootstrap";
-import { load as loadConfig, save as saveConfig, update as updateConfig } from "./config-store";
-import { listCandidates, pickCandidate, type LanCandidate } from "./network";
-import {
-  configFile as configFilePath,
-  dataDir,
-  isPackaged,
-  logDir,
-  preloadPath,
-  rendererHtmlPath,
-  userDataDir,
-} from "./paths";
-import * as acmeManager from "./acme-manager";
-import * as firewallCheck from "./firewall-check";
-import * as netcupDns from "./netcup-dns";
+import { bootstrap } from "./bootstrap";
+import { loadSettings, updateSettings } from "./config-store";
+import { pickCandidate, type LanCandidate } from "./network";
+import { dataDir } from "./paths";
 import * as supervisor from "./supervisor";
-import * as settingsWindow from "./settings-window";
-import type { StatusView } from "./preload";
-import * as tray from "./tray";
 import * as updater from "./updater";
 
-// Hide Every Ear from the macOS dock — we're a tray-only app. Has to
-// happen before app is ready.
+const BACKEND_PORT = Number(process.env.BACKEND_PORT ?? 3000);
+const LISTENER_PORT = Number(process.env.EVERY_EAR_LISTENER_PORT ?? 8443);
+
+// When no LAN interface is available (offline / testing) the stack still starts
+// so the web admin is reachable on the loopback address. As soon as an
+// interface connects, the watcher restarts the stack with its real IP.
+const FALLBACK_HOST = "127.0.0.1";
+
 if (process.platform === "darwin") {
   app.dock?.hide();
 }
 
-// Caddy binds this port for the listener-facing HTTPS server. 8443 by
-// default so a normal user can bind it without sudo / UAC / port-ACL setup.
-const LISTENER_PORT = Number(process.env.EVERY_EAR_LISTENER_PORT ?? 8443);
+let currentCandidate: LanCandidate | null = null;
+let ipWatcher: NodeJS.Timeout | null = null;
+let restartWatcher: NodeJS.Timeout | null = null;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
 
-let currentCandidate: LanCandidate | null = null;
-let firstRunPending = false;
-let watcherTimer: NodeJS.Timeout | null = null;
-let appQuitting = false;
-
 app.on("second-instance", () => {
-  showSettings();
-});
-
-app.whenReady().then(async () => {
-  const { isFirstRun } = bootstrap();
-  firstRunPending = isFirstRun;
-
-  await detectAndStart();
-  void firewallCheck.refresh().then(() => broadcastStatus());
-  startWatcher();
-
-  tray.createTray({
-    listenerUrl: () => listenerUrl(),
-    adminUrl: () => adminUrl(),
-    openSettings: () => showSettings(),
-    copyAdminPassword: async () => {
-      const cfg = loadConfig();
-      if (cfg) {
-        clipboard.writeText(cfg.adminPassword);
-        showNotification("Admin password copied to clipboard.");
-      }
-    },
-    quit: () => {
-      void quitApp();
-    },
-    updateState: () => updater.getState(),
-    checkForUpdates: () => void updater.checkForUpdates(),
-    downloadUpdate: () => void updater.downloadUpdate(),
-    installUpdate: () => void updater.installUpdate(),
-  });
-
-  settingsWindow.registerIpc(
-    {
-      getStatus: async () => buildStatus(),
-      setAdminPassword: async (pw) => {
-        updateConfig({ adminPassword: pw });
-        await restartStack();
-        return buildStatus();
-      },
-      setInterface: async (iface) => {
-        updateConfig({ preferredInterface: iface ?? null });
-        await detectAndStart();
-        broadcastStatus();
-        tray.refresh();
-        return buildStatus();
-      },
-      setCaddyTls: async ({ domain, certFile, keyFile }) => {
-        updateConfig({
-          customDomain: domain || null,
-          customCertFile: certFile || null,
-          customKeyFile: keyFile || null,
-        });
-        await restartStack();
-        broadcastStatus();
-        tray.refresh();
-        return buildStatus();
-      },
-      obtainCertificate: async (opts) => {
-        const creds = {
-          customerId: opts.netcupCustomerId,
-          apiKey: opts.netcupApiKey,
-          apiPassword: opts.netcupApiPassword,
-        };
-        const { certFile, keyFile } = await acmeManager.obtainCertificateViaNetcup(
-          opts.domain,
-          creds,
-          (msg) => settingsWindow.broadcastAcmeProgress(msg),
-        );
-        updateConfig({
-          customDomain: opts.domain || null,
-          customCertFile: certFile,
-          customKeyFile: keyFile,
-          netcupCustomerId: opts.netcupCustomerId,
-          netcupApiKey: opts.netcupApiKey,
-          netcupApiPassword: opts.netcupApiPassword,
-        });
-        if (currentCandidate) {
-          settingsWindow.broadcastAcmeProgress(
-            `Setting A record ${opts.domain} → ${currentCandidate.address}…`,
-          );
-          try {
-            const result = await netcupDns.ensureARecord(
-              opts.domain,
-              currentCandidate.address,
-              creds,
-            );
-            settingsWindow.broadcastAcmeProgress(
-              result.changed
-                ? `A record updated${result.previousIp ? ` (was ${result.previousIp})` : ""}.`
-                : "A record already up to date.",
-            );
-          } catch (err) {
-            settingsWindow.broadcastAcmeProgress(
-              `Warning: certificate installed but A record update failed: ${err instanceof Error ? err.message : err}`,
-            );
-          }
-        }
-        await restartStack();
-        broadcastStatus();
-        tray.refresh();
-        return buildStatus();
-      },
-      obtainCertificateManual: async (opts) => {
-        // Provider-agnostic issuance: the user creates the TXT record by hand at
-        // whatever DNS host they use; we surface it and poll until it appears.
-        const { certFile, keyFile } = await acmeManager.obtainCertificateManual(
-          opts.domain,
-          (msg) => settingsWindow.broadcastAcmeProgress(msg),
-          (challenge) => settingsWindow.broadcastAcmeChallenge(challenge),
-        );
-        updateConfig({
-          customDomain: opts.domain || null,
-          customCertFile: certFile,
-          customKeyFile: keyFile,
-        });
-        // The A record is the user's responsibility in manual mode — we have no
-        // provider API to set it, so leave any stored Netcup creds untouched.
-        await restartStack();
-        broadcastStatus();
-        tray.refresh();
-        return buildStatus();
-      },
-      updateDnsRecord: async (opts) => {
-        // Repoint the domain's A record at this machine's current IP without
-        // touching the certificate — for when the IP changed but the cert is
-        // still valid.
-        const domain = opts.domain?.trim();
-        if (!domain) throw new Error("Enter a domain first.");
-        if (!currentCandidate) {
-          throw new Error("No active network interface — can't determine this machine's IP.");
-        }
-        const creds = {
-          customerId: opts.netcupCustomerId?.trim(),
-          apiKey: opts.netcupApiKey?.trim(),
-          apiPassword: opts.netcupApiPassword?.trim(),
-        };
-        if (!creds.customerId || !creds.apiKey || !creds.apiPassword) {
-          throw new Error("All three Netcup fields are required.");
-        }
-        const result = await netcupDns.ensureARecord(domain, currentCandidate.address, creds);
-        // Persist domain + Netcup creds so the automatic IP watcher keeps the
-        // record in sync going forward. Certificate files are left untouched.
-        updateConfig({
-          customDomain: domain,
-          netcupCustomerId: creds.customerId,
-          netcupApiKey: creds.apiKey,
-          netcupApiPassword: creds.apiPassword,
-        });
-        broadcastStatus();
-        tray.refresh();
-        const message = result.changed
-          ? `A record updated: ${domain} → ${currentCandidate.address}${
-              result.previousIp ? ` (was ${result.previousIp})` : ""
-            }.`
-          : `A record already up to date (${domain} → ${currentCandidate.address}).`;
-        return { changed: result.changed, message };
-      },
-      regenerateCredentials: async () => {
-        regenerateLiveKitCredentials();
-        await restartStack();
-        return buildStatus();
-      },
-      resetAllData: async () => {
-        await wipeAllData();
-        return buildStatus();
-      },
-      acknowledgeFirstRun: async () => {
-        firstRunPending = false;
-      },
-      refreshFirewallCheck: async () => {
-        await firewallCheck.refresh();
-        return buildStatus();
-      },
-      openFirewallSettings: async () => {
-        if (process.platform === "darwin") {
-          await shell.openExternal(
-            "x-apple.systempreferences:com.apple.preference.security?Firewall",
-          );
-        }
-        // Linux has no standard firewall settings GUI — the firewall-check
-        // module never emits a warning on Linux, so this path is unreachable.
-      },
-      checkForUpdates: async () => {
-        await updater.checkForUpdates();
-        return buildStatus();
-      },
-      downloadUpdate: async () => {
-        await updater.downloadUpdate();
-        return buildStatus();
-      },
-      installUpdate: async () => {
-        updater.installUpdate();
-        return buildStatus();
-      },
-    },
-    { logDir: logDir() },
-  );
-
-  // Background update channel: Windows auto-updates, macOS detects + notifies.
-  // Any state change refreshes both the settings window and the tray label.
-  updater.initUpdater({
-    onState: () => {
-      broadcastStatus();
-      tray.refresh();
-    },
-  });
-
-  if (isFirstRun) {
-    showSettings();
-  }
+  openAdmin();
 });
 
 app.on("window-all-closed", () => {
-  // Tray-only — never quit when the settings window closes.
-  // Electron auto-quits on window-all-closed except when no handler is
-  // attached on macOS. Attaching this empty handler is enough on every OS
-  // because we keep the supervisor running anyway and the user quits via
-  // the tray.
+  // Background service — never quit when a window closes (there is no window).
 });
 
-app.on("before-quit", () => {
-  appQuitting = true;
-});
+app.on("before-quit", () => {});
 
 app.on("will-quit", async (e) => {
   if (supervisor.status() !== "stopped") {
     e.preventDefault();
     await supervisor.stop().catch(() => {});
-    if (watcherTimer) clearInterval(watcherTimer);
+    if (ipWatcher) clearInterval(ipWatcher);
+    if (restartWatcher) clearInterval(restartWatcher);
     updater.disposeUpdater();
-    settingsWindow.unregisterIpc();
-    tray.destroy();
     app.exit(0);
+  }
+});
+
+app.whenReady().then(async () => {
+  const { isFirstRun, config } = bootstrap();
+  await detectAndStart();
+  updater.initUpdater({ onState: () => {} });
+  startWatchers();
+  openAdmin();
+
+  if (isFirstRun) {
+    showNotification(
+      `Admin password: ${config.adminPassword} — it is also in ${path.join(dataDir(), "settings.json")}.`,
+    );
   }
 });
 
 // ---- core flows ------------------------------------------------------------
 
 async function detectAndStart(): Promise<void> {
-  const cfg = loadConfig();
-  if (!cfg) return;
-  currentCandidate = await pickCandidate(cfg.preferredInterface);
+  const settings = loadSettings();
+  const next = await pickCandidate(settings.preferredInterface);
+  currentCandidate = next;
 
-  if (!currentCandidate) {
-    // No usable LAN — start nothing, but keep the app alive so the user can
-    // open settings and see the empty interface picker.
-    if (supervisor.status() !== "stopped") await supervisor.stop();
-    return;
+  // No LAN interface → fall back to loopback so the web admin still comes up.
+  const host = next?.address ?? FALLBACK_HOST;
+  if (settings.publicHost !== host) {
+    updateSettings({ publicHost: host });
   }
 
-  const env = {
-    livekitApiKey: cfg.livekitApiKey,
-    livekitApiSecret: cfg.livekitApiSecret,
-    adminPassword: cfg.adminPassword,
-    publicHost: currentCandidate.address,
-    listenerPort: LISTENER_PORT,
-    languages: cfg.languages,
-    dataDir: dataDir(),
-    customDomain: cfg.customDomain ?? null,
-    customCertFile: cfg.customCertFile ?? null,
-    customKeyFile: cfg.customKeyFile ?? null,
-  };
-
+  const env = { publicHost: host, listenerPort: settings.listenerPort, dataDir: dataDir() };
   if (supervisor.status() === "running") {
     await supervisor.restart(env);
   } else if (supervisor.status() === "stopped") {
@@ -316,70 +90,31 @@ async function detectAndStart(): Promise<void> {
 }
 
 async function restartStack(): Promise<void> {
-  const cfg = loadConfig();
-  if (!cfg || !currentCandidate) return;
+  const settings = loadSettings();
+  const next = currentCandidate ?? (await pickCandidate(settings.preferredInterface));
+  const host = next?.address ?? FALLBACK_HOST;
   await supervisor.restart({
-    livekitApiKey: cfg.livekitApiKey,
-    livekitApiSecret: cfg.livekitApiSecret,
-    adminPassword: cfg.adminPassword,
-    publicHost: currentCandidate.address,
-    listenerPort: LISTENER_PORT,
-    languages: cfg.languages,
+    publicHost: host,
+    listenerPort: settings.listenerPort,
     dataDir: dataDir(),
-    customDomain: cfg.customDomain ?? null,
-    customCertFile: cfg.customCertFile ?? null,
-    customKeyFile: cfg.customKeyFile ?? null,
   });
-  broadcastStatus();
-  tray.refresh();
 }
 
-async function wipeAllData(): Promise<void> {
-  await supervisor.stop();
-  rmSync(dataDir(), { recursive: true, force: true });
-  rmSync(configFilePath(), { force: true });
-  bootstrap();
-  await detectAndStart();
-  broadcastStatus();
-  tray.refresh();
-  showNotification("All event data and credentials reset.");
-}
-
-async function quitApp(): Promise<void> {
-  appQuitting = true;
-  await supervisor.stop().catch(() => {});
-  if (watcherTimer) clearInterval(watcherTimer);
-  updater.disposeUpdater();
-  settingsWindow.unregisterIpc();
-  tray.destroy();
-  app.exit(0);
-}
-
-function startWatcher(): void {
-  // Re-evaluate the IP every 5s. When it changes (e.g. user roamed onto a
-  // different SSID), restart caddy + livekit with the new PUBLIC_HOST and
-  // notify the user — listeners' QR just changed.
-  let tick = 0;
-  watcherTimer = setInterval(async () => {
-    // Re-check the firewall roughly every 30s so a stale warning self-clears
-    // after the user toggles the macOS firewall — without reopening settings.
-    // Only re-broadcast when the warning actually changed to avoid UI churn.
-    if (tick++ % 6 === 0) {
-      const before = firewallCheck.getCached().warning;
-      const after = (await firewallCheck.refresh()).warning;
-      if (before !== after) broadcastStatus();
-    }
-
-    const cfg = loadConfig();
-    if (!cfg) return;
-    const next = await pickCandidate(cfg.preferredInterface);
+function startWatchers(): void {
+  // Re-evaluate the IP every 5s. A change restarts the stack with the new
+  // public host and the QR/listener URL changes.
+  ipWatcher = setInterval(async () => {
+    const settings = loadSettings();
+    const next = await pickCandidate(settings.preferredInterface);
     if (!next) {
+      // Lost the network: keep the stack up on loopback (admin stays reachable).
       if (currentCandidate) {
         currentCandidate = null;
-        await supervisor.stop().catch(() => {});
-        broadcastStatus();
-        tray.refresh();
-        showNotification("No LAN interface — listeners are offline until network returns.");
+        updateSettings({ publicHost: FALLBACK_HOST });
+        await restartStack();
+        showNotification(
+          "No network — listeners are offline, but the web admin stays available on this machine.",
+        );
       }
       return;
     }
@@ -389,100 +124,25 @@ function startWatcher(): void {
       currentCandidate.address !== next.address
     ) {
       currentCandidate = next;
+      updateSettings({ publicHost: next.address });
       await restartStack();
-      // The Netcup A record is intentionally NOT auto-updated here — the user
-      // updates it explicitly via the "Update A-record" button in settings.
-      showNotification(
-        `Network changed — listeners now connect to https://${withPort(next.address)}/`,
-      );
+      showNotification(`Network changed — listeners now connect to https://${next.address}:${LISTENER_PORT}/`);
     }
   }, 5000);
+
+  // The web admin writes a `.restart-requested` marker for changes that need a
+  // process restart (LiveKit credentials, listener port). Act on it here.
+  restartWatcher = setInterval(async () => {
+    const flag = path.join(dataDir(), ".restart-requested");
+    if (existsSync(flag)) {
+      rmSync(flag, { force: true });
+      await restartStack();
+    }
+  }, 2000);
 }
 
-// ---- helpers ---------------------------------------------------------------
-
-function withPort(host: string): string {
-  // Hide :443 (in case someone overrides) but always show non-default ports.
-  return LISTENER_PORT === 443 ? host : `${host}:${LISTENER_PORT}`;
-}
-
-function listenerUrl(): string | null {
-  if (!currentCandidate) return null;
-  const cfg = loadConfig();
-  const host = cfg?.customDomain?.trim() || currentCandidate.address;
-  return `https://${withPort(host)}/`;
-}
-
-function adminUrl(): string | null {
-  if (!currentCandidate) return null;
-  const cfg = loadConfig();
-  const host = cfg?.customDomain?.trim() || currentCandidate.address;
-  return `https://${withPort(host)}/admin.html`;
-}
-
-async function buildStatus(): Promise<StatusView> {
-  const cfg = loadConfig() ?? bootstrap().config;
-  const candidates = (await listCandidates()).map((c) => ({
-    iface: c.iface,
-    address: c.address,
-    isDefaultRoute: c.isDefaultRoute,
-  }));
-  return {
-    listenerUrl: listenerUrl(),
-    adminUrl: adminUrl(),
-    adminPassword: cfg.adminPassword,
-    livekitApiKey: cfg.livekitApiKey,
-    candidates,
-    currentInterface: currentCandidate?.iface ?? null,
-    currentIp: currentCandidate?.address ?? null,
-    supervisorStatus: supervisor.status(),
-    version: app.getVersion(),
-    logDir: logDir(),
-    isFirstRun: firstRunPending,
-    customDomain: cfg.customDomain ?? null,
-    customCertFile: cfg.customCertFile ?? null,
-    customKeyFile: cfg.customKeyFile ?? null,
-    netcupCustomerId: cfg.netcupCustomerId ?? null,
-    netcupApiKey: cfg.netcupApiKey ?? null,
-    netcupApiPassword: cfg.netcupApiPassword ?? null,
-    firewallWarning: firewallCheck.getCached().warning,
-    firewallBinaryPath: firewallCheck.getCached().binaryPath,
-    update: updater.getState(),
-  };
-}
-
-function broadcastStatus(): void {
-  void buildStatus().then((s) => settingsWindow.broadcastStatus(s));
-}
-
-function showSettings(): void {
-  settingsWindow.createOrShow({
-    preloadPath: preloadPath(),
-    rendererHtml: rendererHtmlPath(),
-    iconPath: trayIconForWindow(),
-  });
-  broadcastStatus();
-  // The firewall check is otherwise only run at startup, so toggling the
-  // firewall in System Settings afterwards left a stale warning until the user
-  // hit "Re-check". Re-evaluate on every open and re-broadcast the result.
-  void firewallCheck.refresh().then(() => broadcastStatus());
-}
-
-function trayIconForWindow(): string {
-  // Mirror the resolution in tray.ts — extraResources lands directly under
-  // Contents/Resources/ when packaged, and lives at desktop/resources/ in dev.
-  if (isPackaged) {
-    return path.join(
-      process.resourcesPath,
-      process.platform === "win32" ? "icon.ico" : "icon.png",
-    );
-  }
-  return path.join(
-    __dirname,
-    "..",
-    "resources",
-    process.platform === "win32" ? "icon.ico" : "icon.png",
-  );
+function openAdmin(): void {
+  void shell.openExternal(`http://127.0.0.1:${BACKEND_PORT}/admin.html`);
 }
 
 function showNotification(body: string): void {
@@ -490,37 +150,14 @@ function showNotification(body: string): void {
   new Notification({ title: "Every Ear", body }).show();
 }
 
-// Surface unexpected supervisor crashes. The supervisor now attempts a
-// bounded auto-restart with backoff; we notify the user on every crash and
-// flag fatal ones (restart budget exhausted) so they know manual action is
-// needed.
 supervisor.events.on(
   "crash",
-  ({ name, code, fatal, detail }: { name: string; code: number | null; fatal?: boolean; detail?: string }) => {
+  ({ name, fatal, detail }: { name: string; fatal?: boolean; detail?: string }) => {
     const suffix = detail ? ` — ${detail}` : "";
-    if (fatal) {
-      showNotification(`${name} crashed fatally${suffix}. Open Settings to restart manually.`);
-    } else {
-      showNotification(`${name} exited unexpectedly (code ${code})${suffix}.`);
-    }
-    broadcastStatus();
-    tray.refresh();
+    showNotification(`${name} ${fatal ? "crashed fatally" : "restarted"}${suffix}.`);
   },
 );
 
-// Last-chance error paths so the user sees something instead of a silent quit.
 process.on("uncaughtException", (err) => {
   console.error("[main] uncaught", err);
-  if (app.isReady()) {
-    void dialog.showMessageBox({ type: "error", message: "Every Ear error", detail: String(err) });
-  }
-});
-
-// Open external links from the renderer's anchors via the OS browser, never
-// in a new BrowserWindow.
-app.on("web-contents-created", (_e, contents) => {
-  contents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
-    return { action: "deny" };
-  });
 });

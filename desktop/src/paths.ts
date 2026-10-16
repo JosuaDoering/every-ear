@@ -13,8 +13,6 @@ export const isPackaged: boolean = app.isPackaged;
 
 export function resourcesDir(): string {
   if (isPackaged) return process.resourcesPath;
-  // In dev, mirror the packaged layout enough that supervisor + Caddy keep
-  // working: backend/frontend live under the repo, binaries on PATH.
   return repoRoot;
 }
 
@@ -30,8 +28,9 @@ export function logDir(): string {
   return path.join(userDataDir(), "logs");
 }
 
-export function configFile(): string {
-  return path.join(userDataDir(), "config.json");
+/** Shared settings file (also read/written by the backend). */
+export function settingsPath(): string {
+  return path.join(dataDir(), "settings.json");
 }
 
 function platformBinaryName(name: string): string {
@@ -49,7 +48,6 @@ export function binaryPath(name: "livekit-server" | "caddy"): string {
   if (isPackaged) {
     return path.join(process.resourcesPath, "bin", exeName);
   }
-  // Dev: check the bundled .bin first (populated by fetch-binaries), then PATH.
   const localBundled = path.join(repoRoot, "desktop", "resources", "bin", platformDir(), archDir(), exeName);
   if (existsSync(localBundled)) return localBundled;
   const repoBin = path.join(repoRoot, ".bin", exeName);
@@ -92,21 +90,6 @@ export function frontendDist(): string {
   return path.join(repoRoot, "frontend", "dist");
 }
 
-export function caddyfilePath(): string {
-  if (isPackaged) return path.join(process.resourcesPath, "Caddyfile");
-  return path.join(repoRoot, "desktop", "resources", "Caddyfile.tmpl");
-}
-
-/** Runtime-generated Caddyfile written before each supervisor start. */
-export function generatedCaddyfilePath(): string {
-  return path.join(userDataDir(), "Caddyfile");
-}
-
-/** Where Caddy stores its internal CA and ACME certificates. */
-export function caddyStorageDir(): string {
-  return path.join(userDataDir(), "caddy-data");
-}
-
 export function livekitConfigPath(): string {
   if (isPackaged) return path.join(process.resourcesPath, "livekit.yaml");
   return path.join(repoRoot, "livekit.yaml");
@@ -114,20 +97,4 @@ export function livekitConfigPath(): string {
 
 export function defaultBackgroundPath(): string {
   return path.join(frontendDist(), "bg.jpg");
-}
-
-export function acmeCertsDir(): string {
-  return path.join(userDataDir(), "acme-certs");
-}
-
-export function acmeAccountKeyPath(): string {
-  return path.join(userDataDir(), "acme-account.pem");
-}
-
-export function rendererHtmlPath(): string {
-  return path.join(__dirname, "renderer", "settings.html");
-}
-
-export function preloadPath(): string {
-  return path.join(__dirname, "preload.js");
 }
