@@ -1,0 +1,26 @@
+[Unit]
+Description=Every Ear LiveKit SFU
+Documentation=https://github.com/JosuaDoering/every-ear
+After=network-online.target
+Wants=network-online.target
+# Bounded restart: at most 5 restarts in 60s, then stop trying (avoids a loop).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=every-ear
+Group=every-ear
+WorkingDirectory=/opt/every-ear
+EnvironmentFile=/etc/every-ear/env
+# Keys come from the env file. LIVEKIT_WEBHOOK_* (also in the env file) point
+# LiveKit's participant events at the backend stats collector.
+ExecStart=/opt/every-ear/bin/livekit-server --config /opt/every-ear/livekit.yaml --node-ip ${LIVEKIT_NODE_IP} --keys "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+Restart=always
+RestartSec=1
+# Many UDP sockets + WebSockets.
+LimitNOFILE=65535
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

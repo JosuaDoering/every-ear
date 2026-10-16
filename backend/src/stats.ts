@@ -1,22 +1,32 @@
 // Per-channel listener + broadcast statistics.
 //
-// A "channel" is one LiveKit room (event + language). We poll the LiveKit
-// server API on an interval and derive, per room:
+// A "channel" is one LiveKit room (event + language). We track, per room:
 //   - active listeners right now (hidden subscribe-only participants),
 //   - unique listeners seen in the last 24 h,
 //   - effective seconds a translator/AI track was live (unmuted audio).
 //
-// Polling (rather than webhooks) keeps this self-contained: the backend always
-// runs on the same host as LiveKit, so no webhook URL/signature wiring is
-// needed. Counts survive restarts via stats.json.
+// LiveKit pushes participant events to /api/livekit/webhook (configured via the
+// LIVEKIT_WEBHOOK_* env vars), which lets us keep the "listeners right now"
+// counter current without polling the full participant list every few seconds.
+// A full reconciliation against the RoomService API runs less frequently as the
+// source of truth, so missed/dropped webhooks self-heal. Counts survive restarts
+// via stats.json.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { RoomServiceClient, TrackType } from "livekit-server-sdk";
+import {
+  RoomServiceClient,
+  TrackType,
+  WebhookReceiver,
+} from "livekit-server-sdk";
 import { config } from "./config.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const POLL_MS = 5_000;
+// How often we rebuild the authoritative counts from LiveKit. The webhook path
+// keeps the live numbers fresh in between, so this can be infrequent — which
+// matters because listParticipants() returns the full participant list per room.
+const RECONCILE_MS = 30_000;
+const PERSIST_TICK_MS = 30_000;
 const PERSIST_MIN_INTERVAL_MS = 30_000;
 // Resolution of the "concurrent listeners over the last 24 h" history chart.
 const HISTORY_BUCKET_MS = 5 * 60 * 1000;
@@ -35,14 +45,18 @@ type StatsModel = { rooms: Record<string, RoomStat> };
 const statsFile = () => path.join(config.dataDir, "stats.json");
 
 const model: StatsModel = { rooms: {} };
-// Live snapshot from the most recent poll (not persisted — rebuilt on restart).
-const activeListeners = new Map<string, number>();
+
+// Live snapshot: listener participant identities currently in each room. Rebuilt
+// from scratch on every reconciliation and adjusted incrementally by webhooks.
+const activeListenerIdentities = new Map<string, Set<string>>();
 
 let client: RoomServiceClient | null = null;
+let receiver: WebhookReceiver | null = null;
 let timer: NodeJS.Timeout | null = null;
+let persistTimer: NodeJS.Timeout | null = null;
 let dirty = false;
 let lastPersist = 0;
-// Tracks whether the most recent LiveKit poll succeeded — exposed via
+// Tracks whether the most recent LiveKit reconcile succeeded — exposed via
 // isLiveKitReachable() for the /api/health readiness probe.
 let lastPollOk = false;
 
@@ -60,12 +74,28 @@ function roomStat(room: string): RoomStat {
 }
 
 // A listener identity is `listener-<ipKey>-<random>`. Collapse it to the ipKey
-// so repeat connections from one client count once. Anything that doesn't match
-// (legacy identities) falls back to the whole identity, so it's still counted.
+// so repeat connections from one client count once for the 24 h total. Anything
+// that doesn't match (legacy identities) falls back to the whole identity.
 function listenerKeyFromIdentity(identity: string): string {
   const rest = identity.slice("listener-".length);
   const dash = rest.indexOf("-");
   return dash > 0 ? rest.slice(0, dash) : rest;
+}
+
+function activeCount(room: string): number {
+  return activeListenerIdentities.get(room)?.size ?? 0;
+}
+
+// Record the peak concurrent listeners for the current 5-minute history bucket.
+function recordPeak(room: string, listeners: number): void {
+  const now = Date.now();
+  const bucket = String(Math.floor(now / HISTORY_BUCKET_MS) * HISTORY_BUCKET_MS);
+  const rs = roomStat(room);
+  const peak = Math.max(rs.history[bucket] ?? 0, listeners);
+  if (rs.history[bucket] !== peak) {
+    rs.history[bucket] = peak;
+    dirty = true;
+  }
 }
 
 async function load(): Promise<void> {
@@ -100,6 +130,13 @@ async function persist(): Promise<void> {
   }
 }
 
+function persistIfDirty(): void {
+  if (dirty && Date.now() - lastPersist >= PERSIST_MIN_INTERVAL_MS) {
+    dirty = false;
+    void persist();
+  }
+}
+
 function pruneOld(now: number): void {
   for (const rs of Object.values(model.rooms)) {
     for (const [id, ts] of Object.entries(rs.listeners)) {
@@ -117,7 +154,9 @@ function pruneOld(now: number): void {
   }
 }
 
-async function poll(): Promise<void> {
+// Authoritative rebuild from the RoomService API. Cheap enough to run every
+// RECONCILE_MS and corrects any drift from missed webhook events.
+async function reconcile(): Promise<void> {
   if (!client) return;
   const now = Date.now();
   try {
@@ -126,13 +165,12 @@ async function poll(): Promise<void> {
     for (const room of rooms) {
       seen.add(room.name);
       const participants = await client.listParticipants(room.name);
-      const uniqueListeners = new Set<string>();
+      const set = new Set<string>();
       let broadcasting = false;
       for (const p of participants) {
         if (p.identity.startsWith("listener-")) {
-          const key = listenerKeyFromIdentity(p.identity);
-          uniqueListeners.add(key);
-          roomStat(room.name).listeners[key] = now;
+          set.add(p.identity);
+          roomStat(room.name).listeners[listenerKeyFromIdentity(p.identity)] = now;
           dirty = true;
         } else if (
           p.identity.startsWith("translator-") ||
@@ -143,31 +181,18 @@ async function poll(): Promise<void> {
           }
         }
       }
-      const listeners = uniqueListeners.size;
-      activeListeners.set(room.name, listeners);
-      // Record the peak concurrent (unique) listeners for this 5-minute bucket.
-      const bucket = String(Math.floor(now / HISTORY_BUCKET_MS) * HISTORY_BUCKET_MS);
-      const rs = roomStat(room.name);
-      const peak = Math.max(rs.history[bucket] ?? 0, listeners);
-      if (rs.history[bucket] !== peak) {
-        rs.history[bucket] = peak;
-        dirty = true;
-      }
+      activeListenerIdentities.set(room.name, set);
+      recordPeak(room.name, set.size);
       if (broadcasting) {
-        rs.broadcastSeconds += POLL_MS / 1000;
+        roomStat(room.name).broadcastSeconds += RECONCILE_MS / 1000;
         dirty = true;
       }
     }
-    // Rooms that have aged out (empty past LiveKit's timeout) report no
-    // active listeners.
-    for (const room of activeListeners.keys()) {
-      if (!seen.has(room)) activeListeners.set(room, 0);
+    // Rooms that have aged out (empty past LiveKit's timeout) no longer count.
+    for (const room of activeListenerIdentities.keys()) {
+      if (!seen.has(room)) activeListenerIdentities.delete(room);
     }
     pruneOld(now);
-    if (dirty && now - lastPersist >= PERSIST_MIN_INTERVAL_MS) {
-      dirty = false;
-      await persist();
-    }
     lastPollOk = true;
   } catch {
     // LiveKit may not be up yet, or briefly unreachable — try again next tick.
@@ -175,7 +200,57 @@ async function poll(): Promise<void> {
   }
 }
 
-/** True if the most recent LiveKit poll succeeded. Best-effort readiness signal. */
+// ---- Webhook handling ------------------------------------------------------
+
+function webhookReceiver(): WebhookReceiver {
+  if (!receiver) {
+    receiver = new WebhookReceiver(config.apiKey, config.apiSecret);
+  }
+  return receiver;
+}
+
+function addActiveListener(room: string, identity: string): void {
+  let set = activeListenerIdentities.get(room);
+  if (!set) {
+    set = new Set();
+    activeListenerIdentities.set(room, set);
+  }
+  if (set.has(identity)) return;
+  set.add(identity);
+  recordPeak(room, set.size);
+  dirty = true;
+}
+
+function removeActiveListener(room: string, identity: string): void {
+  const set = activeListenerIdentities.get(room);
+  if (set?.delete(identity)) dirty = true;
+}
+
+/**
+ * Validate and apply a LiveKit webhook. `rawBody` must be the exact POSTed
+ * string (used to verify the signed payload). Throws if authentication fails.
+ */
+export async function handleWebhook(
+  rawBody: string,
+  authHeader: string | undefined,
+): Promise<void> {
+  const event = await webhookReceiver().receive(rawBody, authHeader);
+  const room = event.room?.name;
+  const identity = event.participant?.identity ?? "";
+  if (!room || !identity.startsWith("listener-")) return;
+
+  if (event.event === "participant_joined") {
+    roomStat(room).listeners[listenerKeyFromIdentity(identity)] = Date.now();
+    addActiveListener(room, identity);
+  } else if (
+    event.event === "participant_left" ||
+    event.event === "participant_connection_aborted"
+  ) {
+    removeActiveListener(room, identity);
+  }
+}
+
+/** True if the most recent LiveKit reconcile succeeded. Best-effort readiness signal. */
 export function isLiveKitReachable(): boolean {
   return lastPollOk;
 }
@@ -183,9 +258,12 @@ export function isLiveKitReachable(): boolean {
 export async function startStatsCollector(): Promise<void> {
   await load();
   client = new RoomServiceClient(liveKitUrl(), config.apiKey, config.apiSecret);
-  void poll();
-  timer = setInterval(() => void poll(), POLL_MS);
+  void reconcile();
+  timer = setInterval(() => void reconcile(), RECONCILE_MS);
   timer.unref?.();
+  // Webhook-driven updates set `dirty` between reconciliations; flush them.
+  persistTimer = setInterval(persistIfDirty, PERSIST_TICK_MS);
+  persistTimer.unref?.();
 }
 
 export type HistoryPoint = { t: number; n: number };
@@ -211,7 +289,7 @@ export function statsForRoom(room: string): ChannelStat {
         .sort((a, b) => a.t - b.t)
     : [];
   return {
-    activeListeners: activeListeners.get(room) ?? 0,
+    activeListeners: activeCount(room),
     listeners24h,
     broadcastSeconds: rs ? Math.round(rs.broadcastSeconds) : 0,
     history,
