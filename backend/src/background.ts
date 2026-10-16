@@ -106,12 +106,28 @@ async function clearByPrefix(prefix: string): Promise<void> {
 }
 
 export function registerBackgroundRoutes(app: FastifyInstance): void {
-  app.get("/api/background", async (_req, reply) => {
+  // Serve a background file with a weak ETag so repeat loads / the 600-device
+  // join burst turn into cheap 304s instead of re-sending the whole image.
+  async function sendBackground(
+    req: { headers: Record<string, string | string[] | undefined> },
+    reply: import("fastify").FastifyReply,
+    bg: { path: string; mime: string },
+  ) {
+    const st = await fs.stat(bg.path);
+    const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+    reply.header("ETag", etag);
+    reply.header("Cache-Control", "public, max-age=300, must-revalidate");
+    if (req.headers["if-none-match"] === etag) {
+      return reply.code(304).send();
+    }
+    reply.header("Content-Type", bg.mime);
+    return reply.send(createReadStream(bg.path));
+  }
+
+  app.get("/api/background", async (req, reply) => {
     const bg = await findGlobalBackground();
     if (!bg) return reply.code(404).send({ error: "no background" });
-    reply.header("Content-Type", bg.mime);
-    reply.header("Cache-Control", "no-cache, must-revalidate");
-    return createReadStream(bg.path);
+    return sendBackground(req, reply, bg);
   });
 
   app.get<{ Params: { id: string } }>(
@@ -123,9 +139,7 @@ export function registerBackgroundRoutes(app: FastifyInstance): void {
         (event.backgroundExt && (await findEventBackground(event.id))) ||
         (await findGlobalBackground());
       if (!bg) return reply.code(404).send({ error: "no background" });
-      reply.header("Content-Type", bg.mime);
-      reply.header("Cache-Control", "no-cache, must-revalidate");
-      return createReadStream(bg.path);
+      return sendBackground(req, reply, bg);
     },
   );
 }

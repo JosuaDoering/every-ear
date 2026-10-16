@@ -1,0 +1,47 @@
+# Every Ear production Caddyfile template (Linux server / systemd).
+#
+# scripts/install-debian.sh substitutes the __PLACEHOLDERS__ and writes the
+# result to /opt/every-ear/Caddyfile. Listener port defaults to 8443 so the
+# service runs unprivileged (no CAP_NET_BIND_SERVICE, no root).
+#
+# LIVEKIT_* / backend ports are internal (loopback only); only the listener
+# port is exposed. Media (WebRTC UDP/TCP 7881-7882) flows directly browser ↔
+# LiveKit, never through this proxy.
+
+{
+	storage file_system {
+		root __DATA_DIR__/caddy-data
+	}
+	servers {
+		# HTTP/3 (QUIC) is frequently blocked/mangled on event WiFi; force TCP.
+		protocols h1 h2
+	}
+	# Prometheus metrics + local admin API on loopback.
+	admin 127.0.0.1:2019
+	metrics
+}
+
+(handlers) {
+	handle_path /livekit/* {
+		reverse_proxy 127.0.0.1:7880
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:__BACKEND_PORT__
+	}
+	handle {
+		root * __FRONTEND_DIST__
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+__PUBLIC_HOST__:__LISTENER_PORT__ {
+	__TLS__
+	import handlers
+	log {
+		output file __LOG_DIR__/access.log {
+			roll_size 10mb
+			roll_keep 3
+		}
+	}
+}

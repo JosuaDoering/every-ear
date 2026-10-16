@@ -48,6 +48,16 @@ function authorized(header: string | undefined): boolean {
 }
 
 export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
+  // Stricter rate limit than the global one for every admin route: the admin
+  // password is a bearer token, so cap brute-force attempts per IP. The global
+  // limiter (root scope) is far too generous for an authenticated surface.
+  app.addHook("onRoute", (routeOptions) => {
+    routeOptions.config = {
+      ...(routeOptions.config ?? {}),
+      rateLimit: { max: 60, timeWindow: "1 minute" },
+    };
+  });
+
   app.addHook("preHandler", async (req, reply) => {
     if (!authorized(req.headers.authorization)) {
       return reply.code(401).send({ error: "unauthorized" });

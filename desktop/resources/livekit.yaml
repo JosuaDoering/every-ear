@@ -6,17 +6,28 @@ rtc:
   tcp_port: 7881
   udp_port: 7882
   use_external_ip: false
-  # node_ip is overridden via --node-ip CLI flag in Procfile so we can read $LIVEKIT_NODE_IP from .env
+  # node_ip is overridden via --node-ip CLI flag (Procfile / supervisor / systemd)
+  # so we can read $LIVEKIT_NODE_IP from .env.
 
 logging:
   level: info
   json: false
 
-# API keys come from LIVEKIT_KEYS env var ("<key>: <secret>") — see Procfile.
+# API keys are passed via the --keys CLI flag ("$LIVEKIT_API_KEY: $LIVEKIT_API_SECRET")
+# and, if present, the LIVEKIT_KEYS environment variable.
+
+# Prometheus metrics on :6789/metrics (scraped by an optional Prometheus/Grafana).
+# LiveKit generates CLI/env overrides for every config path, so this can also be
+# disabled by not exposing the port. See deploy/ for a sample scrape config.
+prometheus:
+  port: 6789
 
 room:
   auto_create: true
   empty_timeout: 600
+  # Hard ceiling per room. A single node comfortably serves 600 listeners for one
+  # audio track; raise this only together with CPU/uplink headroom (see README).
+  # Override at runtime with LIVEKIT_ROOM_MAX_PARTICIPANTS=...
   max_participants: 600
 
 audio:

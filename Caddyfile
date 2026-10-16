@@ -3,6 +3,15 @@
 #
 # {$PUBLIC_HOST} expands to the value from .env at start-time (overmind loads .env).
 
+{
+	# Disable HTTP/3 (QUIC). Its UDP transport is frequently blocked or mangled
+	# by carrier NATs / captive portals / event-WiFi firewalls, producing
+	# ERR_QUIC_PROTOCOL_ERROR on clients with no clean TCP fallback.
+	servers {
+		protocols h1 h2
+	}
+}
+
 {$PUBLIC_HOST}:443, localhost:443 {
 	tls internal
 

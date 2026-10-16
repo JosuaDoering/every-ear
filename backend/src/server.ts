@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
+import { promises as fs } from "node:fs";
 import { config } from "./config.js";
 import { listenerToken, translatorToken, aiPublisherToken } from "./tokens.js";
 import { getCode, listCodes, markUsed } from "./codes.js";
@@ -12,9 +13,19 @@ import {
 } from "./languages.js";
 import { adminPlugin } from "./admin.js";
 import { registerBackgroundRoutes } from "./background.js";
-import { startStatsCollector, isLiveKitReachable } from "./stats.js";
+import {
+  startStatsCollector,
+  isLiveKitReachable,
+  handleWebhook,
+} from "./stats.js";
 import { loadAiConfig } from "./ai/config.js";
 import { translateStream, type TranslateError } from "./ai/translate.js";
+
+/** Read a positive integer from the environment, falling back to `fallback`. */
+function envInt(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
+}
 
 async function start() {
   // trustProxy so req.ip reflects the real client behind the Caddy reverse
@@ -36,13 +47,22 @@ async function start() {
     limits: { fileSize: 10 * 1024 * 1024 },
   });
 
+  // LiveKit posts webhooks as `application/webhook+json`. The signature covers
+  // the exact raw body, so parse it as a string and validate in the handler.
+  app.addContentTypeParser(
+    "application/webhook+json",
+    { parseAs: "string" },
+    (_req, body, done) => done(null, body),
+  );
+
   // Global per-IP rate limit: a generous ceiling that protects against
   // runaway clients / accidental loops without throttling real event
   // traffic (hundreds of phones behind one NAT share a single upstream
   // IP — the limit is high on purpose). Stricter limits are applied per
-  // route below.
+  // route below. Tune via RATE_LIMIT_GLOBAL_MAX if a venue puts many guests
+  // behind a second NAT/hotspot so they share one IP.
   await app.register(rateLimit, {
-    max: 600,
+    max: envInt("RATE_LIMIT_GLOBAL_MAX", 600),
     timeWindow: "1 minute",
     // Allow the shared LAN IP to burst during join surges at the start of
     // an event; the per-route caps below still bound the expensive paths.
@@ -55,15 +75,57 @@ async function start() {
     },
   });
 
-  // Readiness/liveness probe. Returns LiveKit reachability so Caddy/Electron
-  // (or any orchestrator) can distinguish "backend up" from "stack ready".
+  // Readiness/liveness probe. Returns LiveKit reachability plus disk/data-dir
+  // health so Caddy/Electron (or any orchestrator/watchdog) can distinguish
+  // "backend up" from "stack ready" and from "about to fall over".
   app.get("/api/health", async () => {
+    let diskFreeBytes: number | null = null;
+    let diskFreePercent: number | null = null;
+    let dataWritable = false;
+    try {
+      await fs.mkdir(config.dataDir, { recursive: true });
+      await fs.access(config.dataDir);
+      dataWritable = true;
+    } catch {
+      dataWritable = false;
+    }
+    try {
+      const st = await fs.statfs(config.dataDir);
+      diskFreeBytes = Number(st.bavail) * Number(st.bsize);
+      const total = Number(st.blocks) * Number(st.bsize);
+      diskFreePercent = total > 0 ? Math.round((diskFreeBytes / total) * 1000) / 10 : null;
+    } catch {
+      // statfs is unavailable on some platforms — leave the fields null.
+    }
     return {
       status: "ok",
       livekit: isLiveKitReachable() ? "ok" : "unreachable",
       uptimeMs: process.uptime() * 1000,
+      dataWritable,
+      diskFreeBytes,
+      diskFreePercent,
     };
   });
+
+  // LiveKit pushes participant/track events here (see stats.ts). Excluded from
+  // the global per-IP rate limit: a 600-listener join burst produces hundreds of
+  // events from 127.0.0.1 in a minute, and dropping them would only cause the
+  // stats to drift until the next reconciliation.
+  app.post(
+    "/api/livekit/webhook",
+    { config: { rateLimit: false } },
+    async (req, reply) => {
+      const raw = typeof req.body === "string" ? req.body : "";
+      if (!raw) return reply.code(400).send({ error: "empty body" });
+      try {
+        await handleWebhook(raw, req.headers.authorization);
+        return { ok: true };
+      } catch (err) {
+        req.log.warn({ err }, "livekit webhook rejected");
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+    },
+  );
 
   app.get("/api/languages", async () => ({
     languages: await listLanguages(),
@@ -102,7 +164,7 @@ async function start() {
 
   app.post<{ Body: { eventId?: string; language?: string } }>(
     "/api/token/listener",
-    { config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    { config: { rateLimit: { max: envInt("RATE_LIMIT_LISTENER_MAX", 300), timeWindow: "1 minute" } } },
     async (req, reply) => {
       const eventId = req.body?.eventId?.trim();
       const language = req.body?.language?.toLowerCase();
@@ -254,9 +316,37 @@ async function start() {
   // Begin polling LiveKit for per-channel listener/broadcast stats. Runs in the
   // background; failures (e.g. LiveKit not up yet) are retried on each tick.
   void startStatsCollector();
+
+  // Graceful shutdown: systemd (or Ctrl-C) sends SIGTERM. Stop accepting work,
+  // drain in-flight requests, then exit so no event is disturbed mid-restart.
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info({ signal }, "shutting down");
+    try {
+      await app.close();
+    } catch (err) {
+      app.log.error({ err }, "error during shutdown");
+    }
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
 start().catch((err) => {
   console.error(err);
+  process.exit(1);
+});
+
+// Never die silently: log unexpected failures. An uncaught exception leaves the
+// process in an undefined state, so we exit and let the supervisor/systemd
+// restart us cleanly rather than risk serving listeners from a broken process.
+process.on("unhandledRejection", (reason) => {
+  console.error("[backend] unhandled rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[backend] uncaught exception:", err);
   process.exit(1);
 });
