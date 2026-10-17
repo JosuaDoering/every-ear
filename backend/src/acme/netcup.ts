@@ -12,6 +12,10 @@
 
 const BASE = "https://api.netcup.com/v1";
 
+/** Outbound requests must never hang forever (a stuck request holds the ACME lock). */
+const REQUEST_TIMEOUT_MS = 30_000;
+const timeoutSignal = (): AbortSignal => AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+
 export type NetcupDomain = {
   id: number;
   fqdn: string;
@@ -71,6 +75,7 @@ function findDomainObject(
 async function getDomain(apiKey: string, fqdn: string): Promise<NetcupDomain | null> {
   const res = await fetch(`${BASE}/domain?fqdn=${encodeURIComponent(fqdn)}`, {
     headers: headers(apiKey),
+    signal: timeoutSignal(),
   });
   const text = await res.text().catch(() => "");
   if (!res.ok) throw new Error(errorText(res.status, text));
@@ -156,6 +161,7 @@ export async function addChallenge(
     method: "POST",
     headers: headers(apiKey),
     body: JSON.stringify({ scope, value }),
+    signal: timeoutSignal(),
   });
   const text = await res.text().catch(() => "");
   if (!res.ok) throw new Error(errorText(res.status, text));
@@ -178,6 +184,7 @@ export async function addChallenge(
     try {
       const status = await fetch(challengeUrl(domain, scope, value), {
         headers: headers(apiKey),
+        signal: timeoutSignal(),
       });
       if (!status.ok) continue;
       const body = await status.text();
@@ -198,6 +205,7 @@ export async function removeChallenge(
   const res = await fetch(challengeUrl(domain, scope, value), {
     method: "DELETE",
     headers: headers(apiKey),
+    signal: timeoutSignal(),
   });
   if (res.status === 404) return;
   if (!res.ok) {

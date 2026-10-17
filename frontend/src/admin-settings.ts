@@ -60,6 +60,11 @@ const $certOwn = document.getElementById("cert-own") as HTMLButtonElement;
 const $netcupKey = document.getElementById("netcup-key") as HTMLInputElement;
 const $netcupSave = document.getElementById("netcup-save") as HTMLButtonElement;
 const $certStatus = document.getElementById("cert-status") as HTMLElement;
+const $certChallenge = document.getElementById("cert-challenge") as HTMLDivElement;
+const $certChallengeName = document.getElementById("cert-challenge-name") as HTMLElement;
+const $certChallengeValue = document.getElementById("cert-challenge-value") as HTMLElement;
+const $certChallengeCopyName = document.getElementById("cert-challenge-copy-name") as HTMLButtonElement;
+const $certChallengeCopyValue = document.getElementById("cert-challenge-copy-value") as HTMLButtonElement;
 
 const $regenerate = document.getElementById("regenerate") as HTMLButtonElement;
 const $resetData = document.getElementById("reset-data") as HTMLButtonElement;
@@ -220,7 +225,17 @@ async function streamSse(
     body: JSON.stringify(body),
   });
   if (res.status === 401) return signOut();
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    const msg =
+      (body as { error?: string }).error ??
+      "Another certificate operation is already running.";
+    $certStatus.textContent = msg;
+    toast(msg, "error");
+    return;
+  }
   if (!res.ok || !res.body) {
+    $certStatus.textContent = `Request failed (HTTP ${res.status})`;
     toast(`Request failed (HTTP ${res.status})`, "error");
     return;
   }
@@ -301,6 +316,34 @@ $netcupSave.addEventListener("click", async () => {
   }
 });
 
+// ---- Manual DNS challenge display -----------------------------------------
+// The TXT record lives in its own persistent block so progress updates can
+// never overwrite it.
+
+function resetChallenge() {
+  $certChallenge.hidden = true;
+  $certChallengeName.textContent = "";
+  $certChallengeValue.textContent = "";
+}
+
+function showChallenge(name: string, value: string) {
+  $certChallengeName.textContent = name;
+  $certChallengeValue.textContent = value;
+  $certChallenge.hidden = false;
+}
+
+$certChallengeCopyName.addEventListener("click", () => {
+  void navigator.clipboard
+    .writeText($certChallengeName.textContent ?? "")
+    .then(() => toast("Record name copied.", "success"));
+});
+
+$certChallengeCopyValue.addEventListener("click", () => {
+  void navigator.clipboard
+    .writeText($certChallengeValue.textContent ?? "")
+    .then(() => toast("Record value copied.", "success"));
+});
+
 $certNetcup.addEventListener("click", async () => {
   const domain = $domain.value.trim();
   if (!domain) {
@@ -308,6 +351,7 @@ $certNetcup.addEventListener("click", async () => {
     return;
   }
   setButtonLoading($certNetcup, true);
+  resetChallenge();
   $certStatus.textContent = "Starting…";
   try {
     await streamSse("/api/admin/certificate/netcup", { domain }, (ev) => {
@@ -334,6 +378,7 @@ $certManual.addEventListener("click", async () => {
     return;
   }
   setButtonLoading($certManual, true);
+  resetChallenge();
   $certStatus.textContent = "Starting…";
   try {
     await streamSse("/api/admin/certificate/manual", { domain }, (ev) => {
@@ -341,12 +386,14 @@ $certManual.addEventListener("click", async () => {
         $certStatus.textContent = ev.error;
         toast(ev.error, "error");
       } else if (ev.challenge) {
-        $certStatus.textContent = `Add this TXT record at your DNS provider: ${ev.challenge.recordName} = ${ev.challenge.recordValue}`;
+        // Keep the record visible; progress updates go to $certStatus only.
+        showChallenge(ev.challenge.recordName, ev.challenge.recordValue);
       } else if (ev.progress) {
         $certStatus.textContent = ev.progress;
       } else if (ev.done) {
         $certStatus.textContent = `Certificate installed. ${ev.listenerUrl ?? ""}`;
         toast("Certificate installed.", "success");
+        resetChallenge();
         void loadPage();
       }
     });
@@ -357,6 +404,7 @@ $certManual.addEventListener("click", async () => {
 
 $certRenew.addEventListener("click", async () => {
   setButtonLoading($certRenew, true);
+  resetChallenge();
   $certStatus.textContent = "Checking certificate…";
   try {
     await streamSse("/api/admin/certificate/renew", {}, (ev) => {
@@ -383,6 +431,7 @@ $certOwn.addEventListener("click", async () => {
     toast("Paste both the certificate and the private key.", "error");
     return;
   }
+  resetChallenge();
   const res = await authedFetch("/api/admin/certificate/own", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -406,6 +455,7 @@ $certReset.addEventListener("click", async () => {
     confirmLabel: "Reset",
   });
   if (!ok) return;
+  resetChallenge();
   const res = await authedFetch("/api/admin/certificate/reset", { method: "POST" });
   if (!res.ok) {
     toast(`Reset failed (HTTP ${res.status})`, "error");

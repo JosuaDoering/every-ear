@@ -232,6 +232,7 @@ label > .password-field {
 input[type="text"],
 input[type="password"],
 input[type="email"],
+input[type="number"],
 select,
 textarea {
   width: 100%;
@@ -254,6 +255,17 @@ textarea {
   min-height: 80px;
   padding: var(--space-3) var(--space-4);
   resize: vertical;
+}
+
+/* Number fields use the same visual language as text fields, without the
+   browser's native stepper buttons. */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 select {
@@ -2314,4 +2326,46 @@ button.is-loading.danger.outline::after {
 
 .event-detail-title h2 {
   margin: 0 0 var(--space-1);
+}
+
+/* ---- Manual DNS challenge ------------------------------------------------ */
+
+.cert-challenge {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-md);
+}
+
+.cert-challenge p {
+  margin: 0;
+}
+
+.cert-challenge-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.cert-challenge-label {
+  min-width: 3.5rem;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.cert-challenge-row code {
+  flex: 1 1 240px;
+  min-width: 0;
+  word-break: break-all;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
 }

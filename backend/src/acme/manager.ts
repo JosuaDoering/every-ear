@@ -3,13 +3,18 @@
 //
 // Paths live under the backend data dir instead of Electron's userData.
 
-import { Client, forge, directory } from "acme-client";
+import { Client, forge, directory, axios as acmeAxios } from "acme-client";
 import type { Order, Authorization } from "acme-client";
 import dns from "node:dns";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import * as netcup from "./netcup.js";
+
+// acme-client talks to Let's Encrypt through a shared axios instance. Without a
+// timeout a flaky network can leave a request hanging forever, which would keep
+// the ACME lock (see renewal.ts) occupied.
+acmeAxios.defaults.timeout = 30_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

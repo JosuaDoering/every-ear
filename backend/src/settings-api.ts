@@ -20,6 +20,7 @@ import {
   renewCertificateIfNeeded,
   certDaysRemaining,
   canAutoRenew,
+  isAcmeBusy,
 } from "./acme/renewal.js";
 
 const RESTART_FLAG = () => path.join(config.dataDir, ".restart-requested");
@@ -142,6 +143,9 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       const s = getSettings();
       const domain = (req.body?.domain ?? s.customDomain ?? "").trim();
       const apiKey = req.body?.netcupApiKey?.trim() || s.netcupApiKey || "";
+      if (isAcmeBusy()) {
+        return reply.code(409).send({ error: "certificate operation already in progress" });
+      }
       const { send, end } = openSse(reply);
       if (!domain) return (send({ error: "domain required" }), end());
       if (!apiKey) return (send({ error: "netcup API key required" }), end());
@@ -169,6 +173,9 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
   app.post<{ Body: { domain?: string } }>("/certificate/manual", async (req, reply) => {
     const s = getSettings();
     const domain = (req.body?.domain ?? s.customDomain ?? "").trim();
+    if (isAcmeBusy()) {
+      return reply.code(409).send({ error: "certificate operation already in progress" });
+    }
     const { send, end } = openSse(reply);
     if (!domain) return (send({ error: "domain required" }), end());
     try {
@@ -191,6 +198,9 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
 
   // Renew now (also runs automatically). Streams progress over SSE.
   app.post("/certificate/renew", async (_req, reply) => {
+    if (isAcmeBusy()) {
+      return reply.code(409).send({ error: "certificate operation already in progress" });
+    }
     const { send, end } = openSse(reply);
     try {
       const result = await renewCertificateIfNeeded((msg) => send({ progress: msg }));

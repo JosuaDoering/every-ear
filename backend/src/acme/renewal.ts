@@ -15,19 +15,62 @@ import { obtainCertificateViaNetcup } from "./manager.js";
 
 const RENEW_BEFORE_DAYS = Math.max(1, Number(process.env.ACME_RENEW_BEFORE_DAYS ?? 30) || 30);
 const CHECK_MS = Math.max(60_000, Number(process.env.ACME_RENEW_CHECK_MS ?? 12 * 60 * 60 * 1000) || 0);
+// Safety net: a manual DNS-01 run may legitimately take ~10 minutes (30 × 20 s),
+// and netcup propagation up to ~15 minutes. Anything beyond this is a hang.
+const TASK_TIMEOUT_MS = Math.max(
+  60_000,
+  Number(process.env.ACME_TASK_TIMEOUT_MS ?? 20 * 60 * 1000) || 0,
+);
 
-// ---- serialised ACME lock --------------------------------------------------
+// ---- ACME lock -------------------------------------------------------------
 
-let chain: Promise<unknown> = Promise.resolve();
+/** Thrown when a certificate operation is already running. */
+export class AcmeBusyError extends Error {
+  constructor() {
+    super("certificate operation already in progress");
+    this.name = "AcmeBusyError";
+  }
+}
 
-/** Run `task` after any other ACME work has finished (never concurrently). */
-export function withAcmeLock<T>(task: () => Promise<T>): Promise<T> {
-  const next = chain.then(task, task);
-  chain = next.then(
-    () => undefined,
-    () => undefined,
-  );
-  return next;
+let busy = false;
+
+/** True while any ACME issuance/renewal is running. */
+export function isAcmeBusy(): boolean {
+  return busy;
+}
+
+function withTaskTimeout<T>(task: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`certificate operation timed out after ${Math.round(ms / 1000)}s`));
+    }, ms);
+    timer.unref?.();
+    task.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Run `task` exclusively. Unlike a promise chain, a second caller does NOT
+ * queue behind a possibly-hung operation — it fails fast with AcmeBusyError, so
+ * the web UI can show "already in progress" instead of hanging on "Starting…".
+ */
+export async function withAcmeLock<T>(task: () => Promise<T>): Promise<T> {
+  if (busy) throw new AcmeBusyError();
+  busy = true;
+  try {
+    return await withTaskTimeout(task(), TASK_TIMEOUT_MS);
+  } finally {
+    busy = false;
+  }
 }
 
 // ---- helpers ---------------------------------------------------------------
@@ -58,10 +101,11 @@ export type RenewResult = "renewed" | "skipped" | "failed";
  * Renew the certificate if it is due and auto-renewal is configured. Safe to
  * call at any time; logs and returns rather than throwing.
  */
-export function renewCertificateIfNeeded(
+export async function renewCertificateIfNeeded(
   onProgress: (msg: string) => void = (m) => console.log("[acme]", m),
 ): Promise<RenewResult> {
-  return withAcmeLock(async () => {
+  try {
+    return await withAcmeLock(async () => {
     const s = getSettings();
     if (!canAutoRenew()) {
       onProgress("auto-renewal not configured (needs a custom domain + netcup REST API key)");
@@ -92,7 +136,15 @@ export function renewCertificateIfNeeded(
       onProgress(`renewal failed: ${err instanceof Error ? err.message : String(err)}`);
       return "failed";
     }
-  });
+    });
+  } catch (err) {
+    if (err instanceof AcmeBusyError) {
+      onProgress("another certificate operation is in progress — skipping");
+      return "skipped";
+    }
+    onProgress(`renewal failed: ${err instanceof Error ? err.message : String(err)}`);
+    return "failed";
+  }
 }
 
 /** Start the boot check + periodic renewal timer. */

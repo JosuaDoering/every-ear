@@ -60,7 +60,7 @@
           </label>
           <label>
             Listener port
-            <input id="port" type="number" min="1" max="65535" />
+            <input id="port" type="number" inputmode="numeric" min="1" max="65535" step="1" />
           </label>
         </div>
         <div class="settings-actions">
@@ -130,6 +130,24 @@
           <button type="button" class="secondary" id="cert-reset">
             <span>Reset to internal CA</span>
           </button>
+        </div>
+
+        <div id="cert-challenge" class="cert-challenge" hidden>
+          <span class="status-label">DNS TXT record to create</span>
+          <p class="hint">
+            Add this record at your DNS provider. It stays visible while the check
+            runs (up to ~10 minutes).
+          </p>
+          <div class="cert-challenge-row">
+            <span class="cert-challenge-label">Name</span>
+            <code id="cert-challenge-name"></code>
+            <button type="button" class="ghost small" id="cert-challenge-copy-name"><span>Copy</span></button>
+          </div>
+          <div class="cert-challenge-row">
+            <span class="cert-challenge-label">Value</span>
+            <code id="cert-challenge-value"></code>
+            <button type="button" class="ghost small" id="cert-challenge-copy-value"><span>Copy</span></button>
+          </div>
         </div>
 
         <details class="settings-owncert">
