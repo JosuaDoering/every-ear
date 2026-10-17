@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Every Ear · Settings</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="admin-body">
+    <main class="admin settings-page">
+      <div id="admin-nav"></div>
+
+      <div id="restart-banner" class="restart-banner" hidden>
+        <strong>Restart required.</strong>
+        <span>
+          Some changes need a process restart. The desktop app restarts automatically;
+          on a server run <code>sudo systemctl restart 'every-ear-*'</code>.
+        </span>
+      </div>
+
+      <!-- Overview -->
+      <section class="admin-block">
+        <h2>Overview</h2>
+        <div class="status-grid">
+          <div class="status-card">
+            <span class="status-label">This admin page</span>
+            <code id="local-url">…</code>
+            <button type="button" class="ghost small" id="copy-local"><span>Copy</span></button>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Listener URL</span>
+            <code id="listener-url">…</code>
+            <button type="button" class="ghost small" id="copy-listener"><span>Copy</span></button>
+          </div>
+          <div class="status-card">
+            <span class="status-label">LiveKit</span>
+            <span id="livekit-state" class="status-pill neutral">checking…</span>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Certificate</span>
+            <span id="cert-summary" class="status-pill neutral">checking…</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 1 · Connection -->
+      <section class="admin-block" id="connection">
+        <div class="settings-section-head">
+          <span class="step-badge">1</span>
+          <div>
+            <h2>Connection</h2>
+            <p class="hint">Which network interface listeners connect to, and the HTTPS port.</p>
+          </div>
+        </div>
+        <div class="settings-form-grid">
+          <label>
+            Interface
+            <select id="interface" aria-label="Network interface"></select>
+          </label>
+          <label>
+            Listener port
+            <input id="port" type="number" min="1" max="65535" />
+          </label>
+        </div>
+        <div class="settings-actions">
+          <button type="button" class="primary" id="network-save"><span>Save connection</span></button>
+          <span class="apply-badge restart">↻ restarts the stack</span>
+        </div>
+      </section>
+
+      <!-- 2 · Administration -->
+      <section class="admin-block" id="administration">
+        <div class="settings-section-head">
+          <span class="step-badge">2</span>
+          <div>
+            <h2>Administration</h2>
+            <p class="hint">The password that protects this web interface.</p>
+          </div>
+        </div>
+        <form id="password-form" class="settings-form-grid">
+          <label>
+            New password
+            <input id="password" type="password" autocomplete="new-password" />
+          </label>
+          <div class="settings-actions">
+            <button type="submit" class="primary" id="password-submit"><span>Change password</span></button>
+            <span class="apply-badge live">✓ applies immediately</span>
+          </div>
+        </form>
+      </section>
+
+      <!-- 3 · HTTPS & domain -->
+      <section class="admin-block" id="https">
+        <div class="settings-section-head">
+          <span class="step-badge">3</span>
+          <div>
+            <h2>HTTPS &amp; domain</h2>
+            <p class="hint">
+              A domain with a trusted Let's Encrypt certificate means guests see no
+              certificate warning. The DNS A-record must be set manually in the netcup CCP.
+            </p>
+          </div>
+        </div>
+
+        <div class="cert-status-grid">
+          <div class="status-card">
+            <span class="status-label">Domain</span>
+            <strong id="cert-domain">Using internal certificate</strong>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Auto-renewal</span>
+            <span id="cert-autorenew" class="status-pill neutral">off</span>
+            <button type="button" class="secondary small" id="cert-renew"><span>Renew now</span></button>
+          </div>
+        </div>
+
+        <label>
+          Domain
+          <input id="domain" type="text" placeholder="events.example.com" autocomplete="off" />
+        </label>
+
+        <div class="settings-actions wrap">
+          <button type="button" class="primary" id="cert-netcup">
+            <span>Get certificate (Netcup)</span>
+          </button>
+          <button type="button" class="secondary" id="cert-manual">
+            <span>Get certificate (manual DNS)</span>
+          </button>
+          <button type="button" class="secondary" id="cert-reset">
+            <span>Reset to internal CA</span>
+          </button>
+        </div>
+
+        <details class="settings-owncert">
+          <summary>Use an own certificate</summary>
+          <label>
+            Certificate (PEM)
+            <textarea id="cert-pem" rows="4" spellcheck="false"></textarea>
+          </label>
+          <label>
+            Private key (PEM)
+            <textarea id="key-pem" rows="4" spellcheck="false"></textarea>
+          </label>
+          <div class="settings-actions">
+            <button type="button" class="primary" id="cert-own"><span>Save certificate</span></button>
+          </div>
+        </details>
+
+        <div class="admin-subblock">
+          <h3>Netcup API key</h3>
+          <p class="hint">
+            The 64-character netcup REST API key. Used only for automatic certificate
+            issuance and renewal. It cannot manage A-records — set those manually.
+          </p>
+          <div class="settings-inline-field">
+            <input id="netcup-key" type="password" placeholder="64-character REST API key" autocomplete="off" />
+            <button type="button" class="primary small" id="netcup-save"><span>Save API key</span></button>
+          </div>
+        </div>
+
+        <div id="cert-status" class="hint cert-progress"></div>
+      </section>
+
+      <!-- Appearance -->
+      <section class="admin-block" id="appearance">
+        <h2>Appearance</h2>
+        <p class="hint">
+          The default background shown on the listener and translator pages when an
+          event has no image of its own.
+        </p>
+        <div class="default-bg-row">
+          <div class="bg-preview" id="bg-preview"></div>
+          <form id="bg-form" class="row-stack">
+            <label class="file-label">
+              <input id="bg-file" type="file" accept="image/*" />
+              <span class="file-fake">Choose image…</span>
+              <span id="bg-filename" class="file-name">No file chosen</span>
+            </label>
+            <div class="row">
+              <button type="submit" class="primary"><span>Upload</span></button>
+              <button type="button" id="bg-reset" class="secondary"><span>Reset to bundled</span></button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- Advanced & danger -->
+      <details class="admin-block settings-danger">
+        <summary>
+          <span class="settings-danger-title">Advanced &amp; danger</span>
+          <span class="hint">Credentials and destructive actions — click to reveal.</span>
+        </summary>
+
+        <div class="danger-zone">
+          <div class="danger-zone-text">
+            <strong>Regenerate LiveKit credentials</strong>
+            <p class="hint">
+              Rotates the LiveKit key/secret and restarts the stack. Active listeners
+              must reconnect.
+            </p>
+          </div>
+          <button type="button" class="danger" id="regenerate"><span>Regenerate</span></button>
+        </div>
+
+        <div class="danger-zone">
+          <div class="danger-zone-text">
+            <strong>Reset event data</strong>
+            <p class="hint">
+              Deletes all events, codes, languages, statistics and images. Credentials
+              and settings are kept. Restarts the stack.
+            </p>
+          </div>
+          <button type="button" class="danger" id="reset-data"><span>Reset data</span></button>
+        </div>
+      </details>
+    </main>
+
+    <script type="module" src="/src/admin-settings.ts"></script>
+  </body>
+</html>

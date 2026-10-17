@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Every Ear · Languages</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="admin-body">
+    <main class="admin settings-page">
+      <div id="admin-nav"></div>
+
+      <section class="admin-block">
+        <p class="hint">
+          These are the languages available when creating events. Which languages
+          an individual event uses is configured in that event.
+        </p>
+
+        <form id="add-lang-form" class="lang-add-row">
+          <input id="add-lang-code" type="text" placeholder="Code (de)" maxlength="8" autocomplete="off" required />
+          <input id="add-lang-flag" type="text" placeholder="🇩🇪" maxlength="6" autocomplete="off" />
+          <input id="add-lang-name" type="text" placeholder="Display name (Deutsch)" required />
+          <button type="submit" class="primary"><span>Add language</span></button>
+        </form>
+
+        <div id="lang-list" class="lang-list"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/admin-languages.ts"></script>
+  </body>
+</html>

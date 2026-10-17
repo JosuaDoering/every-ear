@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
-# Obtain (and auto-renew) a trusted Let's Encrypt certificate via DNS-01, so
-# listener devices never see a certificate warning. Uses acme.sh + the Netcup
-# DNS API hook shipped in deploy/acme/.
+# Obtain (and auto-renew) a trusted Let's Encrypt certificate via DNS-01 using
+# netcup's new REST API. This is the scripted alternative to the web admin's
+# "Get certificate (Netcup)" button.
 #
 # Required env:
-#   DOMAIN                    e.g. events.example.com
-#   NETCUP_CUSTOMER_ID, NETCUP_API_KEY, NETCUP_API_PASSWORD
+#   DOMAIN           e.g. events.example.com
+#   NETCUP_API_KEY   the 64-character netcup REST API key
 # Optional:
-#   ACME_EMAIL (account contact), TLS_DIR (default /etc/every-ear/tls)
+#   ACME_EMAIL (account contact), TLS_DIR (default /etc/every-ear/tls),
+#   DATA_DIR (default /var/lib/every-ear)
 #
-# The domain's A record must already point at this host's LAN IP (set it in the
-# Netcup control panel, or via the app's DNS screen). DNS-01 needs no inbound
-# port, so this works entirely offline from the event network's perspective.
+# DNS-01 needs no inbound port. The A record must point the domain at this host
+# and has to be set manually in the netcup CCP (the REST API cannot manage A
+# records).
 set -euo pipefail
 
 DOMAIN="${DOMAIN:?set DOMAIN=events.example.com}"
+NETCUP_API_KEY="${NETCUP_API_KEY:?set NETCUP_API_KEY to your 64-character netcup REST API key}"
 TLS_DIR="${TLS_DIR:-/etc/every-ear/tls}"
+DATA_DIR="${DATA_DIR:-/var/lib/every-ear}"
 ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
 ACME_EMAIL="${ACME_EMAIL:-admin@$DOMAIN}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required for the Netcup hook (apt-get install -y python3)." >&2; exit 1; }
-for v in NETCUP_CUSTOMER_ID NETCUP_API_KEY NETCUP_API_PASSWORD; do
-  eval "val=\${$v:-}"
-  [ -n "$val" ] || { echo "$v is required." >&2; exit 1; }
-done
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required (apt-get install -y python3)." >&2; exit 1; }
+if [ "${#NETCUP_API_KEY}" -ne 64 ]; then
+  echo "Warning: the new netcup REST API key is 64 characters; yours is ${#NETCUP_API_KEY}." >&2
+fi
 
 if [ ! -x "$ACME_HOME/acme.sh" ] && [ ! -x "$HOME/.acme.sh/acme.sh" ]; then
   echo "→ Installing acme.sh…"
@@ -37,11 +39,11 @@ else
   ACME="$HOME/.acme.sh/acme.sh"
 fi
 
-echo "→ Installing Netcup DNS hook…"
+echo "→ Installing netcup REST API hook…"
 mkdir -p "$ACME_HOME/dnsapi"
 install -m 0644 "$SCRIPT_DIR/../deploy/acme/dns_netcup.sh" "$ACME_HOME/dnsapi/dns_netcup.sh"
 
-export NETCUP_CUSTOMER_ID NETCUP_API_KEY NETCUP_API_PASSWORD
+export NETCUP_API_KEY
 
 echo "→ Requesting certificate for $DOMAIN (Let's Encrypt, DNS-01)…"
 "$ACME" --issue --server letsencrypt --dns dns_netcup -d "$DOMAIN" --keylength ec-256
@@ -56,9 +58,27 @@ echo "→ Installing certificate into $TLS_DIR…"
 chmod 0644 "$TLS_DIR/fullchain.pem"
 chmod 0600 "$TLS_DIR/privkey.pem"
 
-if id every-ear >/dev/null 2>&1; then
-  chown -R every-ear:every-ear "$TLS_DIR"
+# Point the backend's settings at these files so its generated Caddyfile uses
+# the certificate (and keeps using it across renewals).
+if [ -f "$DATA_DIR/settings.json" ]; then
+  python3 - "$DATA_DIR/settings.json" "$DOMAIN" "$TLS_DIR/fullchain.pem" "$TLS_DIR/privkey.pem" <<'PY'
+import json, sys
+path, domain, cert, key = sys.argv[1:5]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+data["customDomain"] = domain
+data["customCertFile"] = cert
+data["customKeyFile"] = key
+data.pop("netcupCustomerId", None)
+data.pop("netcupApiPassword", None)
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+PY
+  chown every-ear:every-ear "$DATA_DIR/settings.json" 2>/dev/null || true
+  chmod 0600 "$DATA_DIR/settings.json"
+  # Restart the backend so it regenerates the Caddyfile and reloads Caddy.
+  systemctl restart every-ear-backend 2>/dev/null || true
 fi
 
 echo "✓ Certificate installed. acme.sh renews it automatically (cron) and reloads Caddy."
-echo "  Re-run scripts/install-debian.sh (or set DOMAIN in the env file) to point Caddy at it."
+echo "  The DNS A record must be set manually in the netcup CCP (the REST API cannot manage it)."

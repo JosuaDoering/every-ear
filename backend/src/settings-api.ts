@@ -15,7 +15,6 @@ import { reloadCaddy } from "./caddy.js";
 import { listCandidates } from "./network.js";
 import { isLiveKitReachable } from "./stats.js";
 import * as acme from "./acme/manager.js";
-import * as netcup from "./acme/netcup.js";
 import {
   withAcmeLock,
   renewCertificateIfNeeded,
@@ -71,9 +70,7 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
         customDomain: s.customDomain,
         customCertFile: s.customCertFile,
         customKeyFile: s.customKeyFile,
-        netcupCustomerId: s.netcupCustomerId,
         hasNetcupKey: Boolean(s.netcupApiKey),
-        hasNetcupPassword: Boolean(s.netcupApiPassword),
         livekitApiKey: s.livekitApiKey,
       },
       candidates,
@@ -98,9 +95,7 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       preferredInterface?: string | null;
       languages?: string;
       customDomain?: string | null;
-      netcupCustomerId?: string | null;
       netcupApiKey?: string;
-      netcupApiPassword?: string;
     };
   }>("/settings", async (req) => {
     const body = req.body ?? {};
@@ -119,14 +114,8 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
     if (typeof body.customDomain !== "undefined") {
       patch.customDomain = body.customDomain?.trim() || null;
     }
-    if (typeof body.netcupCustomerId !== "undefined") {
-      patch.netcupCustomerId = body.netcupCustomerId?.trim() || null;
-    }
     if (typeof body.netcupApiKey === "string" && body.netcupApiKey && !body.netcupApiKey.startsWith("…")) {
       patch.netcupApiKey = body.netcupApiKey.trim();
-    }
-    if (typeof body.netcupApiPassword === "string" && body.netcupApiPassword && !body.netcupApiPassword.startsWith("…")) {
-      patch.netcupApiPassword = body.netcupApiPassword.trim();
     }
     if (typeof body.preferredInterface !== "undefined") {
       patch.preferredInterface = body.preferredInterface || null;
@@ -146,33 +135,25 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
 
   // ---- Certificates --------------------------------------------------------
 
-  // Automatic issuance via the Netcup DNS API. Streams progress over SSE.
-  app.post<{ Body: { domain?: string; netcupCustomerId?: string; netcupApiKey?: string; netcupApiPassword?: string } }>(
+  // Automatic issuance via the netcup REST API (DNS-01). Streams progress.
+  app.post<{ Body: { domain?: string; netcupApiKey?: string } }>(
     "/certificate/netcup",
     async (req, reply) => {
       const s = getSettings();
       const domain = (req.body?.domain ?? s.customDomain ?? "").trim();
-      const creds = {
-        customerId: req.body?.netcupCustomerId?.trim() || s.netcupCustomerId || "",
-        apiKey: req.body?.netcupApiKey?.trim() || s.netcupApiKey || "",
-        apiPassword: req.body?.netcupApiPassword?.trim() || s.netcupApiPassword || "",
-      };
+      const apiKey = req.body?.netcupApiKey?.trim() || s.netcupApiKey || "";
       const { send, end } = openSse(reply);
       if (!domain) return (send({ error: "domain required" }), end());
-      if (!creds.customerId || !creds.apiKey || !creds.apiPassword) {
-        return (send({ error: "Netcup credentials required" }), end());
-      }
+      if (!apiKey) return (send({ error: "netcup API key required" }), end());
       try {
         const { certFile, keyFile } = await withAcmeLock(() =>
-          acme.obtainCertificateViaNetcup(domain, creds, (msg) => send({ progress: msg })),
+          acme.obtainCertificateViaNetcup(domain, apiKey, (msg) => send({ progress: msg })),
         );
         updateSettings({
           customDomain: domain,
           customCertFile: certFile,
           customKeyFile: keyFile,
-          netcupCustomerId: creds.customerId,
-          netcupApiKey: creds.apiKey,
-          netcupApiPassword: creds.apiPassword,
+          netcupApiKey: apiKey,
         });
         await reloadCaddy();
         send({ done: true, listenerUrl: listenerUrl(getSettings()) });
@@ -250,30 +231,6 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
     updateSettings({ customDomain: null, customCertFile: null, customKeyFile: null });
     await reloadCaddy();
     return { ok: true, listenerUrl: listenerUrl(getSettings()) };
-  });
-
-  // Point the domain's A record at this host (Netcup).
-  app.post<{ Body: { domain?: string; ip?: string } }>("/dns/update-a", async (req, reply) => {
-    const s = getSettings();
-    const domain = (req.body?.domain ?? s.customDomain ?? "").trim();
-    const ip = (req.body?.ip ?? s.publicHost ?? "").trim();
-    if (!domain) return reply.code(400).send({ error: "domain required" });
-    if (!ip) return reply.code(400).send({ error: "no public host known" });
-    if (!s.netcupCustomerId || !s.netcupApiKey || !s.netcupApiPassword) {
-      return reply.code(400).send({ error: "Netcup credentials not configured" });
-    }
-    const result = await netcup.ensureARecord(domain, ip, {
-      customerId: s.netcupCustomerId,
-      apiKey: s.netcupApiKey,
-      apiPassword: s.netcupApiPassword,
-    });
-    return {
-      changed: result.changed,
-      previousIp: result.previousIp,
-      message: result.changed
-        ? `A record updated: ${domain} → ${ip}${result.previousIp ? ` (was ${result.previousIp})` : ""}.`
-        : `A record already up to date (${domain} → ${ip}).`,
-    };
   });
 
   // ---- Credentials + reset -------------------------------------------------

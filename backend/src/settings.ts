@@ -40,10 +40,8 @@ export type Settings = {
   customCertFile: string | null;
   /** PEM TLS private key file. Paired with customCertFile. */
   customKeyFile: string | null;
-  /** Netcup CCP API customer number (automated ACME DNS-01). */
-  netcupCustomerId: string | null;
+  /** netcup REST API key (64 chars) for automated ACME DNS-01. */
   netcupApiKey: string | null;
-  netcupApiPassword: string | null;
   createdAt: string;
 };
 
@@ -63,9 +61,7 @@ function normalize(p: Partial<Settings>): Settings {
     customDomain: p.customDomain ?? null,
     customCertFile: p.customCertFile ?? null,
     customKeyFile: p.customKeyFile ?? null,
-    netcupCustomerId: p.netcupCustomerId ?? null,
     netcupApiKey: p.netcupApiKey ?? null,
-    netcupApiPassword: p.netcupApiPassword ?? null,
     createdAt: p.createdAt ?? new Date().toISOString(),
   };
 }

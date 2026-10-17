@@ -15,7 +15,7 @@
 # environment overrides before running:
 #     LISTENER_PORT=8443   BACKEND_PORT=3000
 #     DOMAIN=events.example.com        # enables trusted HTTPS
-#     NETCUP_CUSTOMER_ID / NETCUP_API_KEY / NETCUP_API_PASSWORD   # ACME DNS-01
+#     NETCUP_API_KEY                                  # 64-char REST key (ACME DNS-01)
 set -euo pipefail
 
 # ---- paths -----------------------------------------------------------------
@@ -157,9 +157,7 @@ log "Writing $DATA_DIR/settings.json"
   echo "  \"customDomain\": $( [ -n "$DOMAIN" ] && echo "\"${DOMAIN}\"" || echo "null" ),"
   echo "  \"customCertFile\": null,"
   echo "  \"customKeyFile\": null,"
-  echo "  \"netcupCustomerId\": $( [ -n "${NETCUP_CUSTOMER_ID:-}" ] && echo "\"${NETCUP_CUSTOMER_ID}\"" || echo "null" ),"
   echo "  \"netcupApiKey\": $( [ -n "${NETCUP_API_KEY:-}" ] && echo "\"${NETCUP_API_KEY}\"" || echo "null" ),"
-  echo "  \"netcupApiPassword\": $( [ -n "${NETCUP_API_PASSWORD:-}" ] && echo "\"${NETCUP_API_PASSWORD}\"" || echo "null" ),"
   echo "  \"createdAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
   echo "}"
 } > "$DATA_DIR/settings.json"
@@ -241,7 +239,8 @@ cat <<EOF
 ✓ Every Ear installed.
 
   Listener URL : https://${DOMAIN:-$PUBLIC_HOST}:${LISTENER_PORT}/
-  Admin (web)  : http://127.0.0.1:${BACKEND_PORT}/admin.html   ← all settings live here
+  Admin (web)  : http://127.0.0.1:${BACKEND_PORT}/admin.html
+  Settings     : http://127.0.0.1:${BACKEND_PORT}/admin-settings.html
   Admin (LAN)  : https://${DOMAIN:-$PUBLIC_HOST}:${LISTENER_PORT}/admin.html
   Admin pass   : $ADMIN_PASSWORD
 

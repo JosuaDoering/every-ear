@@ -20,9 +20,7 @@ export type Settings = {
   customDomain: string | null;
   customCertFile: string | null;
   customKeyFile: string | null;
-  netcupCustomerId: string | null;
   netcupApiKey: string | null;
-  netcupApiPassword: string | null;
   createdAt: string;
 };
 
@@ -42,9 +40,7 @@ function normalize(p: Partial<Settings>): Settings {
     customDomain: p.customDomain ?? null,
     customCertFile: p.customCertFile ?? null,
     customKeyFile: p.customKeyFile ?? null,
-    netcupCustomerId: p.netcupCustomerId ?? null,
     netcupApiKey: p.netcupApiKey ?? null,
-    netcupApiPassword: p.netcupApiPassword ?? null,
     createdAt: p.createdAt ?? new Date().toISOString(),
   };
 }

@@ -1,226 +1,207 @@
-// Netcup CCP API client — only the subset needed for ACME DNS-01.
-// Docs: https://ccp.netcup.net/run/webservice/servers/endpoint.php
+// Netcup REST API client (CloudDNS).
 //
-// Field formats matched against acme.sh's dns_netcup.sh (widely tested):
-//   - Wrapper key is "dnsrecordset", NOT "dnsrecords" (the latter triggers
-//     Netcup's generic "DNS records are not in valid format" error).
-//   - All record fields must be present; missing fields fail validation.
-//   - deleterecord is a string ("false" / "TRUE"), not a JSON boolean.
-//   - hostname is the FQDN with a trailing dot (e.g. "_acme-challenge.example.de.").
-//   - priority is the empty string for non-MX records.
+// The legacy CCP API (ccp.netcup.net, key + password + customer number) is no
+// longer used. The new REST API authenticates with a single API key (64 chars)
+// as a Bearer token.
+//
+// Scope: the API currently only manages `_acme-challenge` records, which is
+// exactly what DNS-01 certificate issuance needs. A/AAAA records cannot be
+// managed here — those must be set manually in the netcup CCP.
+//
+// Docs: https://www.netcup.com/en/helpcenter/documentation/domain/our-api
 
-const ENDPOINT = "https://ccp.netcup.net/run/webservice/servers/endpoint.php?JSON";
+const BASE = "https://api.netcup.com/v1";
 
-export type NetcupCreds = {
-  customerId: string;
-  apiKey: string;
-  apiPassword: string;
+export type NetcupDomain = {
+  id: number;
+  fqdn: string;
+  /** False if the zone's DNS is not managed via netcup CloudDNS. */
+  isDnsManaged: boolean;
 };
 
-type NetcupResponse = {
-  status: string;
-  statuscode: number;
-  shortmessage: string;
-  longmessage: string;
-  responsedata: unknown;
-};
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-type DnsRecord = {
-  id: string;
-  hostname: string;
-  type: string;
-  priority: string;
-  destination: string;
-  deleterecord: string;
-  state: string;
-};
+function headers(apiKey: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+}
 
-async function request(action: string, param: Record<string, unknown>): Promise<unknown> {
-  const res = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, param }),
-  });
-  if (!res.ok) throw new Error(`Netcup HTTP ${res.status}`);
-  const json = (await res.json()) as NetcupResponse;
-  if (json.status !== "success") {
-    throw new Error(`Netcup: ${json.shortmessage} — ${json.longmessage}`);
+function errorText(status: number, body: string): string {
+  return `netcup API HTTP ${status}: ${body.slice(0, 300)}`;
+}
+
+/** Recursively find a domain object (`id` + `fqdn`) in a JSON response. */
+function findDomainObject(
+  value: unknown,
+): { id: number; fqdn: string; isDnsManaged?: boolean } | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findDomainObject(item);
+      if (found) return found;
+    }
+    return null;
   }
-  return json.responsedata;
+  const obj = value as Record<string, unknown>;
+  if (
+    typeof obj.fqdn === "string" &&
+    (typeof obj.id === "number" || typeof obj.id === "string")
+  ) {
+    return {
+      id: Number(obj.id),
+      fqdn: obj.fqdn,
+      isDnsManaged:
+        typeof obj.isDnsManaged === "boolean" ? obj.isDnsManaged : undefined,
+    };
+  }
+  for (const nested of Object.values(obj)) {
+    const found = findDomainObject(nested);
+    if (found) return found;
+  }
+  return null;
 }
 
-export async function login(creds: NetcupCreds): Promise<string> {
-  const data = (await request("login", {
-    customernumber: creds.customerId,
-    apikey: creds.apiKey,
-    apipassword: creds.apiPassword,
-  })) as { apisessionid: string };
-  return data.apisessionid;
-}
-
-export async function logout(creds: NetcupCreds, sessionId: string): Promise<void> {
-  await request("logout", {
-    customernumber: creds.customerId,
-    apikey: creds.apiKey,
-    apisessionid: sessionId,
-  }).catch(() => {});
-}
-
-export async function addTxtRecord(
-  zone: string,
-  fqdn: string,
-  value: string,
-  creds: NetcupCreds,
-  sessionId: string,
-): Promise<void> {
-  await request("updateDnsRecords", {
-    apikey: creds.apiKey,
-    apisessionid: sessionId,
-    customernumber: creds.customerId,
-    clientrequestid: "",
-    domainname: zone,
-    dnsrecordset: {
-      dnsrecords: [
-        {
-          id: "",
-          hostname: `${fqdn}.`,
-          type: "TXT",
-          priority: "",
-          destination: value,
-          deleterecord: "false",
-          state: "yes",
-        },
-      ],
-    },
+/**
+ * Look up one exact FQDN. Returns null if it is not a domain of this account,
+ * throws on authentication/transport errors.
+ */
+async function getDomain(apiKey: string, fqdn: string): Promise<NetcupDomain | null> {
+  const res = await fetch(`${BASE}/domain?fqdn=${encodeURIComponent(fqdn)}`, {
+    headers: headers(apiKey),
   });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(errorText(res.status, text));
+
+  let json: unknown = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // Non-JSON response — treat as not found.
+    return null;
+  }
+
+  const found = findDomainObject(json);
+  if (found && Number.isFinite(found.id)) {
+    return {
+      id: found.id,
+      fqdn: found.fqdn,
+      isDnsManaged: found.isDnsManaged !== false,
+    };
+  }
+
+  const obj = json as { success?: boolean; code?: string; message?: string } | null;
+  if (obj?.code === "resourceDoesNotExist") return null;
+  if (obj?.success === true) return null; // empty result → not this account
+  const detail = (obj?.message ?? text.slice(0, 300)) || "unexpected response";
+  throw new Error(`netcup API: ${detail}`);
 }
 
-export async function removeTxtRecord(
-  zone: string,
-  fqdn: string,
-  value: string,
-  creds: NetcupCreds,
-  sessionId: string,
-): Promise<void> {
-  const data = (await request("infoDnsRecords", {
-    apikey: creds.apiKey,
-    apisessionid: sessionId,
-    customernumber: creds.customerId,
-    domainname: zone,
-  })) as { dnsrecords?: DnsRecord[] } | null;
-
-  const records = data?.dnsrecords ?? [];
-  const expectedHostname = `${fqdn}.`;
-  const record = records.find(
-    (r) =>
-      r.type === "TXT" &&
-      r.destination === value &&
-      (r.hostname === expectedHostname || r.hostname === fqdn),
-  );
-  if (!record?.id) return;
-
-  await request("updateDnsRecords", {
-    apikey: creds.apiKey,
-    apisessionid: sessionId,
-    customernumber: creds.customerId,
-    clientrequestid: "",
-    domainname: zone,
-    dnsrecordset: {
-      dnsrecords: [
-        {
-          id: record.id,
-          hostname: record.hostname,
-          type: "TXT",
-          priority: record.priority ?? "",
-          destination: value,
-          deleterecord: "TRUE",
-          state: "yes",
-        },
-      ],
-    },
-  });
+/**
+ * Find the zone that hosts `name`, walking up its labels (longest match first).
+ * For `_acme-challenge.events.example.com` the `_acme-challenge` label is
+ * skipped, since it can never be a zone.
+ */
+export async function resolveDomain(apiKey: string, name: string): Promise<NetcupDomain | null> {
+  const labels = name.split(".").filter(Boolean);
+  const start = name.startsWith("_acme-challenge.") ? 1 : 0;
+  for (let i = start; i < labels.length; i++) {
+    const candidate = labels.slice(i).join(".");
+    const found = await getDomain(apiKey, candidate);
+    if (found) return found;
+  }
+  return null;
 }
 
-// Split a (sub-)domain into the Netcup zone + the hostname relative to that
-// zone. Netcup uses "@" for the zone apex, otherwise the subdomain prefix.
-function splitDomain(domain: string): { zone: string; host: string } {
-  const parts = domain.split(".");
-  const zone = parts.length <= 2 ? domain : parts.slice(-2).join(".");
-  if (domain === zone) return { zone, host: "@" };
-  return { zone, host: domain.slice(0, -(zone.length + 1)) };
+/**
+ * Host part of the challenge relative to its zone. The REST API prepends
+ * `_acme-challenge.` itself, so it is stripped here.
+ *   _acme-challenge.example.com        + example.com → "@"
+ *   _acme-challenge.events.example.com + example.com → "events"
+ */
+export function challengeScope(challengeName: string, zone: string): string {
+  let host = challengeName.replace(/^_acme-challenge\./, "");
+  if (host === zone) return "@";
+  if (host.endsWith(`.${zone}`)) host = host.slice(0, -(zone.length + 1));
+  return host;
 }
 
-function matchesHost(recordHost: string, host: string, domain: string): boolean {
+function challengeUrl(domain: NetcupDomain, scope: string, value: string): string {
   return (
-    recordHost === host ||
-    recordHost === `${host}.` ||
-    recordHost === domain ||
-    recordHost === `${domain}.`
+    `${BASE}/domain/${domain.id}/acme/challenge/` +
+    `${encodeURIComponent(scope)}/${encodeURIComponent(value)}`
   );
 }
 
 /**
- * Make sure the A record for `domain` points to `ip`.
- *  - no-op if the record already matches,
- *  - updates the existing record's destination if it differs,
- *  - creates a new record if none exists.
- * Returns whether anything changed plus the previous IP (for notifications).
+ * Create the ACME challenge TXT record and wait (up to ~60s) until netcup has
+ * deployed it to the nameservers. Returns even if it is still deploying — the
+ * caller also polls public DNS, which is the authoritative check.
  */
-export async function ensureARecord(
-  domain: string,
-  ip: string,
-  creds: NetcupCreds,
-): Promise<{ changed: boolean; previousIp: string | null }> {
-  const { zone, host } = splitDomain(domain);
-  const sessionId = await login(creds);
-  try {
-    const data = (await request("infoDnsRecords", {
-      apikey: creds.apiKey,
-      apisessionid: sessionId,
-      customernumber: creds.customerId,
-      domainname: zone,
-    })) as { dnsrecords?: DnsRecord[] } | null;
-
-    const records = data?.dnsrecords ?? [];
-    const existing = records.find(
-      (r) => r.type === "A" && matchesHost(r.hostname, host, domain),
+export async function addChallenge(
+  apiKey: string,
+  domain: NetcupDomain,
+  scope: string,
+  value: string,
+): Promise<void> {
+  if (!domain.isDnsManaged) {
+    throw new Error(
+      `The DNS of ${domain.fqdn} is not managed by netcup CloudDNS — the new API cannot add records for it.`,
     );
+  }
 
-    if (existing && existing.destination === ip) {
-      return { changed: false, previousIp: ip };
+  const res = await fetch(`${BASE}/domain/${domain.id}/acme/challenge`, {
+    method: "POST",
+    headers: headers(apiKey),
+    body: JSON.stringify({ scope, value }),
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(errorText(res.status, text));
+  try {
+    const json = text ? (JSON.parse(text) as { success?: boolean; message?: string }) : null;
+    if (json && json.success === false) {
+      throw new Error(`netcup API: ${json.message ?? text.slice(0, 300)}`);
     }
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      // non-JSON success body — accept it
+    } else {
+      throw err;
+    }
+  }
 
-    const recordToSend = existing
-      ? {
-          id: existing.id,
-          hostname: existing.hostname,
-          type: "A",
-          priority: existing.priority ?? "",
-          destination: ip,
-          deleterecord: "false",
-          state: "yes",
-        }
-      : {
-          id: "",
-          hostname: host,
-          type: "A",
-          priority: "",
-          destination: ip,
-          deleterecord: "false",
-          state: "yes",
-        };
+  // Wait for the asynchronous deployment to the nameservers.
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await sleep(5_000);
+    try {
+      const status = await fetch(challengeUrl(domain, scope, value), {
+        headers: headers(apiKey),
+      });
+      if (!status.ok) continue;
+      const body = await status.text();
+      if (/"status"\s*:\s*"deployed"/.test(body)) return;
+    } catch {
+      // transient — keep polling
+    }
+  }
+}
 
-    await request("updateDnsRecords", {
-      apikey: creds.apiKey,
-      apisessionid: sessionId,
-      customernumber: creds.customerId,
-      clientrequestid: "",
-      domainname: zone,
-      dnsrecordset: { dnsrecords: [recordToSend] },
-    });
-
-    return { changed: true, previousIp: existing?.destination ?? null };
-  } finally {
-    await logout(creds, sessionId);
+/** Remove the challenge record. A missing record is treated as success. */
+export async function removeChallenge(
+  apiKey: string,
+  domain: NetcupDomain,
+  scope: string,
+  value: string,
+): Promise<void> {
+  const res = await fetch(challengeUrl(domain, scope, value), {
+    method: "DELETE",
+    headers: headers(apiKey),
+  });
+  if (res.status === 404) return;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(errorText(res.status, text));
   }
 }

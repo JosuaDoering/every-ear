@@ -49,7 +49,7 @@ export function certDaysRemaining(certFile: string | null): number | null {
 /** True if the current settings can be auto-renewed (Netcup DNS-01). */
 export function canAutoRenew(): boolean {
   const s = getSettings();
-  return Boolean(s.customDomain && s.netcupCustomerId && s.netcupApiKey && s.netcupApiPassword);
+  return Boolean(s.customDomain && s.netcupApiKey);
 }
 
 export type RenewResult = "renewed" | "skipped" | "failed";
@@ -64,7 +64,7 @@ export function renewCertificateIfNeeded(
   return withAcmeLock(async () => {
     const s = getSettings();
     if (!canAutoRenew()) {
-      onProgress("auto-renewal not configured (needs domain + Netcup credentials)");
+      onProgress("auto-renewal not configured (needs a custom domain + netcup REST API key)");
       return "skipped";
     }
     const days = certDaysRemaining(s.customCertFile);
@@ -81,11 +81,7 @@ export function renewCertificateIfNeeded(
     try {
       const { certFile, keyFile } = await obtainCertificateViaNetcup(
         s.customDomain!,
-        {
-          customerId: s.netcupCustomerId!,
-          apiKey: s.netcupApiKey!,
-          apiPassword: s.netcupApiPassword!,
-        },
+        s.netcupApiKey!,
         onProgress,
       );
       updateSettings({ customCertFile: certFile, customKeyFile: keyFile });

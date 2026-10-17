@@ -9,8 +9,7 @@ import dns from "node:dns";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
-import * as netcupDns from "./netcup.js";
-import type { NetcupCreds } from "./netcup.js";
+import * as netcup from "./netcup.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -19,12 +18,6 @@ function acmeCertsDir(): string {
 }
 function acmeAccountKeyPath(): string {
   return path.join(config.dataDir, "acme-account.pem");
-}
-
-function extractZoneAndFqdn(domain: string): { zone: string; fqdn: string } {
-  const parts = domain.split(".");
-  const zone = parts.length <= 2 ? domain : parts.slice(-2).join(".");
-  return { zone, fqdn: `_acme-challenge.${domain}` };
 }
 
 // Poll public resolvers until the TXT record is visible. Avoids the user's
@@ -92,8 +85,6 @@ type PreparedOrder = {
   authorization: Authorization;
   challenge: Authorization["challenges"][number];
   txtValue: string;
-  zone: string;
-  fqdn: string;
 };
 
 async function startDns01Order(client: Client, domain: string): Promise<PreparedOrder> {
@@ -106,8 +97,7 @@ async function startDns01Order(client: Client, domain: string): Promise<Prepared
   if (!challenge) throw new Error("DNS-01 challenge not available for this domain.");
 
   const txtValue = await client.getChallengeKeyAuthorization(challenge);
-  const { zone, fqdn } = extractZoneAndFqdn(domain);
-  return { order, authorization, challenge, txtValue, zone, fqdn };
+  return { order, authorization, challenge, txtValue };
 }
 
 async function completeAndInstall(
@@ -140,35 +130,43 @@ async function completeAndInstall(
 
 export async function obtainCertificateViaNetcup(
   domain: string,
-  creds: NetcupCreds,
+  apiKey: string,
   onProgress: (msg: string) => void,
 ): Promise<{ certFile: string; keyFile: string }> {
+  const challengeName = `_acme-challenge.${domain}`;
+
   onProgress("Preparing ACME account…");
   const client = await createAcmeClient();
 
   onProgress("Creating certificate order…");
   const prepared = await startDns01Order(client, domain);
 
-  onProgress("Logging in to Netcup…");
-  const sessionId = await netcupDns.login(creds);
+  onProgress("Looking up the DNS zone at netcup…");
+  const zone = await netcup.resolveDomain(apiKey, challengeName);
+  if (!zone) {
+    throw new Error(
+      `No netcup DNS zone found for ${domain}. Check that the domain belongs to this API key's account.`,
+    );
+  }
+  const scope = netcup.challengeScope(challengeName, zone.fqdn);
 
   try {
     onProgress("Adding DNS TXT record…");
-    await netcupDns.addTxtRecord(prepared.zone, prepared.fqdn, prepared.txtValue, creds, sessionId);
+    await netcup.addChallenge(apiKey, zone, scope, prepared.txtValue);
 
     onProgress("Waiting for DNS propagation (checks every 60 s)…");
-    await waitForDnsPropagation(prepared.fqdn, prepared.txtValue, onProgress);
+    await waitForDnsPropagation(challengeName, prepared.txtValue, onProgress);
 
     const result = await completeAndInstall(client, prepared, domain, onProgress);
 
     onProgress("Removing DNS TXT record…");
-    await netcupDns
-      .removeTxtRecord(prepared.zone, prepared.fqdn, prepared.txtValue, creds, sessionId)
-      .catch(() => {});
+    await netcup.removeChallenge(apiKey, zone, scope, prepared.txtValue).catch(() => {});
 
     return result;
-  } finally {
-    await netcupDns.logout(creds, sessionId);
+  } catch (err) {
+    // Best effort cleanup if we failed after adding the record.
+    await netcup.removeChallenge(apiKey, zone, scope, prepared.txtValue).catch(() => {});
+    throw err;
   }
 }
 
@@ -182,15 +180,16 @@ export async function obtainCertificateManual(
 
   onProgress("Creating certificate order…");
   const prepared = await startDns01Order(client, domain);
+  const challengeName = `_acme-challenge.${domain}`;
 
   onChallenge({
     recordType: "TXT",
-    recordName: prepared.fqdn,
+    recordName: challengeName,
     recordValue: prepared.txtValue,
   });
 
   onProgress("Waiting for the TXT record to appear (checks every 20 s)…");
-  await waitForDnsPropagation(prepared.fqdn, prepared.txtValue, onProgress, {
+  await waitForDnsPropagation(challengeName, prepared.txtValue, onProgress, {
     intervalMs: 20_000,
     maxAttempts: 30,
   });

@@ -78,7 +78,7 @@ A single LiveKit node caps at 600 participants per room by configuration. Exceed
 | Translator | The person speaking a translation into a phone/microphone. |
 | Listener | A guest listening on their own device. |
 | Admin | The person configuring the event and generating translator codes. |
-| Web admin | The web interface at `http://127.0.0.1:<port>/admin.html`, which holds every setting. |
+| Web admin | The web interface at `http://127.0.0.1:<port>/admin.html` (events, codes) and `/admin-settings.html` (all settings). |
 
 ## Installation
 
@@ -117,7 +117,7 @@ the web admin, sign in with it, and change it under **Settings → Admin passwor
 1. Connect the host to the event network (Ethernet recommended and WiFi turned off) and to power.
 2. Open the web admin (`http://127.0.0.1:<port>/admin.html`, or the listener URL with `/admin.html` appended). Under **Settings** you'll find the **listener URL**. If the host has more than one network, pick the right **Interface**, or leave it on the default.
 3. Share the listener URL or QR code with your guests (e.g. on a screen or printout).
-4. Generate a code for each translator: in **Events**, create an event and a language, then add a translator code. Events, languages, codes, backgrounds and AI settings are all managed here.
+4. Generate a code for each translator: open each **Event** to add translator codes. The global language catalog lives under **Languages**, the AI provider under **AI translation**, and system settings under **Settings**.
 
 Translators open the translator URL via the QR code (or manually: listener URL with `/translator.html` appended), enter their 6-digit code, and allow microphone access when prompted.
 
@@ -152,7 +152,7 @@ Everything is done in the web admin under **Settings**. Enter your domain (e.g. 
 
 #### Let's Encrypt (free, trusted)
 
-- **Netcup (automatic):** Under **Settings → Netcup DNS credentials**, enter your **Customer ID**, **API key**, and **API password** (created in the Netcup control panel under *Master data → API*). Then click **Update DNS A-record** to point the domain at the host, and **Get certificate (Netcup)**. Every Ear creates the validation record, waits for it to propagate, completes validation, installs the certificate, and removes the record. Certificates issued this way are **renewed automatically** in the background before they expire (configurable via `ACME_RENEW_BEFORE_DAYS` / `ACME_RENEW_CHECK_MS`); the **Renew now** button triggers a check immediately.
+- **Netcup (automatic):** Under **Settings → Netcup API key**, paste your new **netcup REST API key** (64 characters, created in the netcup CCP). Set the domain's **A record manually** in the netcup CCP so it points at this host, enter the **Domain**, then click **Get certificate (Netcup)**. Every Ear creates the `_acme-challenge` record through the new REST API, waits for it to deploy, completes validation, installs the certificate, and removes the record. Certificates issued this way are **renewed automatically** in the background before they expire (configurable via `ACME_RENEW_BEFORE_DAYS` / `ACME_RENEW_CHECK_MS`); the **Renew now** button triggers a check immediately. The REST API cannot manage A/AAAA records, so the A record stays manual.
 - **Other / manual:** Click **Get certificate (manual DNS)**; Every Ear shows the exact TXT record to create, then polls public DNS and finishes automatically once it is visible (up to about ten minutes). The TXT record can be deleted afterwards. Manual and uploaded certificates are **not** auto-renewed.
 
 #### Own certificate
@@ -173,7 +173,7 @@ A dedicated Linux machine (or VM) is the recommended host for large events: it r
 sudo ./scripts/install-debian.sh
 ```
 
-The installer builds the backend and frontend, downloads pinned LiveKit and Caddy binaries into `/opt/every-ear`, creates a dedicated unprivileged `every-ear` user, writes `/etc/every-ear/env` and `/var/lib/every-ear/settings.json`, installs three systemd units, applies `sysctl` tuning, and starts everything. It prints the local admin URL (`http://127.0.0.1:3000/admin.html`, where all settings live) and a freshly generated admin password.
+The installer builds the backend and frontend, downloads pinned LiveKit and Caddy binaries into `/opt/every-ear`, creates a dedicated unprivileged `every-ear` user, writes `/etc/every-ear/env` and `/var/lib/every-ear/settings.json`, installs three systemd units, applies `sysctl` tuning, and starts everything. It prints the local admin URL (`http://127.0.0.1:3000/admin.html`) and the settings page (`http://127.0.0.1:3000/admin-settings.html`), plus a freshly generated admin password.
 
 | Path | Purpose |
 |------|---------|
@@ -184,7 +184,7 @@ The installer builds the backend and frontend, downloads pinned LiveKit and Cadd
 
 The listener port defaults to **8443** (unprivileged, no root/CAP needed). Services are enabled on boot and restart automatically.
 
-**Trusted HTTPS without per-device warnings.** Open the web admin under **Settings**, enter your domain, add Netcup DNS credentials, click **Update DNS A-record**, then **Get certificate (Netcup)**. Let's Encrypt validates via DNS-01 (no inbound port required) and Caddy is reloaded live, so listener devices show no certificate warning. You can also paste an own certificate there. Without a domain, Caddy uses its internal CA and each device must accept the certificate once. A scripted alternative is `scripts/get-cert.sh` (acme.sh + Netcup).
+**Trusted HTTPS without per-device warnings.** Set the domain's **A record manually** in the netcup CCP so it points at this host. Then open the web admin under **Settings**, enter your domain, paste the **netcup REST API key**, and click **Get certificate (Netcup)**. Let's Encrypt validates via DNS-01 (no inbound port required) and Caddy is reloaded live, so listener devices show no certificate warning. You can also paste an own certificate there. Without a domain, Caddy uses its internal CA and each device must accept the certificate once. A scripted alternative is `scripts/get-cert.sh` (acme.sh + netcup REST API).
 
 **Operating the stack:**
 
@@ -214,7 +214,7 @@ sudo PURGE=1 ./scripts/uninstall-debian.sh           # remove everything
 | The listener URL is blank or wrong | The host is not on a usable network, or the wrong interface is selected. Open **Settings** in the web admin, pick the correct **Interface**, and save. |
 | "Firewall is blocking livekit-server" (macOS) | Use the banner's **Open Firewall settings**, allow incoming connections for `livekit-server`, then **Re-check**. The banner's info button explains the details. |
 | Audio drops out | The network is likely overloaded. Use Ethernet between the host and the router and ensure the network can handle the number of listeners. |
-| The host's IP changed and the domain stopped working | Update the A record to the new IP. With Netcup, open the **DNS** tab and click **Update A-record to this computer's IP**. |
+| The host's IP changed and the domain stopped working | Update the A record to the new IP manually in the netcup CCP (the REST API cannot manage A records). |
 
 If a problem persists, quit Every Ear completely, reopen it, and run the event setup again.
 
