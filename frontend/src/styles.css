@@ -2237,34 +2237,75 @@ button.is-loading.danger.outline::after {
 /* ---- Admin top navigation ------------------------------------------------- */
 
 .admin-tabs {
-  display: flex;
-  gap: 2px;
-  margin: var(--space-1) 0 var(--space-5, 20px);
-  border-bottom: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  margin: var(--space-2) 0 0;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.admin-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .admin-tab {
   flex: none;
-  padding: 10px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: var(--radius-pill);
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--muted);
   text-decoration: none;
   white-space: nowrap;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .admin-tab:hover {
   color: var(--fg);
+  background: rgba(255, 255, 255, 0.65);
 }
 
 .admin-tab.active {
   color: var(--brand);
-  border-bottom-color: var(--brand);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.admin-tab:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.admin-tab-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.admin-tab-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+@media (max-width: 520px) {
+  .admin-tab {
+    gap: 0;
+    padding: 9px 12px;
+  }
+
+  .admin-tab-label {
+    display: none;
+  }
 }
 
 .event-detail-title {
