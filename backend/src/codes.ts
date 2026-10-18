@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { config } from "./config.js";
-import { persistJsonAtomic } from "./store.js";
+import { persistJsonAtomic, readJsonStore, once, forgetPending } from "./store.js";
 import { ensureDefaultEvent } from "./events.js";
 
 export type CodeRole = "translator" | "ai-operator";
@@ -25,40 +25,54 @@ let cache: Map<string, Code> | null = null;
 /** Drop the in-memory cache (used by the admin data reset). */
 export function resetCodesCache(): void {
   cache = null;
+  forgetPending(codesFile());
 }
 
 async function load(): Promise<Map<string, Code>> {
   if (cache) return cache;
-  await fs.mkdir(config.dataDir, { recursive: true });
-  try {
-    const raw = await fs.readFile(codesFile(), "utf8");
-    const arr = JSON.parse(raw) as Array<Partial<Code> & { code: string; language: string; name: string; createdAt: string }>;
+  // Concurrent callers share one read; otherwise each would build its own Map
+  // and the last writer would silently drop the others' changes.
+  return once(codesFile(), async () => {
+    await fs.mkdir(config.dataDir, { recursive: true });
+    const entries = await readJsonStore<Code[]>(
+      codesFile(),
+      (raw) => {
+        if (!Array.isArray(raw)) throw new Error("codes.json is not an array");
+        return raw as Code[];
+      },
+      [],
+    );
+    const next = new Map<string, Code>();
     let needsMigration = false;
     let defaultEventId: string | null = null;
-    const entries: Code[] = [];
-    for (const c of arr) {
+    for (const c of entries) {
       if (!c.eventId) {
         if (!defaultEventId) defaultEventId = (await ensureDefaultEvent()).id;
-        entries.push({ ...c, eventId: defaultEventId } as Code);
+        next.set(c.code, { ...c, eventId: defaultEventId });
         needsMigration = true;
       } else {
-        entries.push(c as Code);
+        next.set(c.code, c);
       }
     }
-    cache = new Map(entries.map((c) => [c.code, c]));
-    if (needsMigration) await persist(cache);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      cache = new Map();
-    } else {
-      throw err;
-    }
-  }
-  return cache;
+    cache = next;
+    // Persist once the cache is set: persist() reads the cache, so calling it
+    // before the assignment would rewrite the old (empty) state.
+    if (needsMigration) await persist(next);
+    return cache;
+  });
 }
 
 async function persist(map: Map<string, Code>): Promise<void> {
-  await persistJsonAtomic(codesFile(), Array.from(map.values()));
+  try {
+    await persistJsonAtomic(codesFile(), Array.from(map.values()));
+  } catch (err) {
+    // The mutation is already applied in memory, so a failed write would keep
+    // it visible until the next restart, where it silently disappears. Drop the
+    // cache: the next read re-reads what is really stored.
+    cache = null;
+    forgetPending(codesFile());
+    throw err;
+  }
 }
 
 export async function listCodes(eventId?: string): Promise<Code[]> {

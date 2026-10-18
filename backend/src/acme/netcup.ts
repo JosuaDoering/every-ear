@@ -62,14 +62,19 @@ function errorText(status: number, body: string): string {
   return `netcup API HTTP ${status}: ${body.slice(0, 300)}`;
 }
 
-/** Recursively find a domain object (`id` + `fqdn`) in a JSON response. */
+/**
+ * Find the domain object for `wanted` in a JSON response. `/domain?fqdn=` is a
+ * *search* endpoint, so its answer can contain sibling or similar names; taking
+ * the first hit would write the TXT record into the wrong zone.
+ */
 function findDomainObject(
   value: unknown,
+  wanted: string,
 ): { id: number; fqdn: string; isDnsManaged?: boolean } | null {
   if (!value || typeof value !== "object") return null;
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = findDomainObject(item);
+      const found = findDomainObject(item, wanted);
       if (found) return found;
     }
     return null;
@@ -77,6 +82,7 @@ function findDomainObject(
   const obj = value as Record<string, unknown>;
   if (
     typeof obj.fqdn === "string" &&
+    fqdnEquals(obj.fqdn, wanted) &&
     (typeof obj.id === "number" || typeof obj.id === "string")
   ) {
     return {
@@ -87,10 +93,16 @@ function findDomainObject(
     };
   }
   for (const nested of Object.values(obj)) {
-    const found = findDomainObject(nested);
+    const found = findDomainObject(nested, wanted);
     if (found) return found;
   }
   return null;
+}
+
+/** Compare DNS names ignoring case and the optional trailing root dot. */
+export function fqdnEquals(a: string, b: string): boolean {
+  const norm = (v: string) => v.trim().toLowerCase().replace(/\.$/, "");
+  return norm(a) === norm(b);
 }
 
 /**
@@ -117,7 +129,7 @@ async function getDomain(
     return null;
   }
 
-  const found = findDomainObject(json);
+  const found = findDomainObject(json, fqdn);
   if (found && Number.isFinite(found.id)) {
     return {
       id: found.id,
@@ -160,9 +172,16 @@ export async function resolveDomain(
  *   _acme-challenge.events.example.com + example.com → "events"
  */
 export function challengeScope(challengeName: string, zone: string): string {
-  let host = challengeName.replace(/^_acme-challenge\./, "");
-  if (host === zone) return "@";
-  if (host.endsWith(`.${zone}`)) host = host.slice(0, -(zone.length + 1));
+  // netcup may report the zone with a trailing root dot ("example.com."), which
+  // would otherwise never match and yield a bogus host part.
+  const z = zone.trim().toLowerCase().replace(/\.$/, "");
+  let host = challengeName
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "")
+    .replace(/^_acme-challenge\./, "");
+  if (host === z) return "@";
+  if (host.endsWith(`.${z}`)) host = host.slice(0, -(z.length + 1));
   return host;
 }
 

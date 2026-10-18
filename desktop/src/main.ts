@@ -29,7 +29,10 @@ let currentCandidate: LanCandidate | null = null;
 let ipWatcher: NodeJS.Timeout | null = null;
 let restartWatcher: NodeJS.Timeout | null = null;
 
-if (!app.requestSingleInstanceLock()) {
+// A second launch must not start a second stack: it would fight the first one
+// for the backend/Caddy/LiveKit ports. It just focuses the existing instance.
+const ownsInstance = app.requestSingleInstanceLock();
+if (!ownsInstance) {
   app.quit();
 }
 
@@ -41,20 +44,33 @@ app.on("window-all-closed", () => {
   // Background service — never quit when a window closes (there is no window).
 });
 
-app.on("before-quit", () => {});
+let cleanupStarted = false;
 
-app.on("will-quit", async (e) => {
-  if (supervisor.status() !== "stopped") {
-    e.preventDefault();
+app.on("will-quit", (e) => {
+  if (cleanupStarted) {
+    // Second pass: the stack is down, let the quit continue. electron-updater's
+    // autoInstallOnAppQuit hook runs on this pass and applies a downloaded
+    // update, which `app.exit()` below would have skipped entirely.
+    return;
+  }
+  if (supervisor.status() === "stopped") return;
+
+  cleanupStarted = true;
+  e.preventDefault();
+  void (async () => {
     await supervisor.stop().catch(() => {});
     if (ipWatcher) clearInterval(ipWatcher);
     if (restartWatcher) clearInterval(restartWatcher);
     updater.disposeUpdater();
-    app.exit(0);
-  }
+    app.quit();
+  })();
 });
 
 app.whenReady().then(async () => {
+  // `app.quit()` above is asynchronous; a losing second instance would still
+  // reach this point and start a competing stack.
+  if (!ownsInstance) return;
+
   const { isFirstRun, config } = bootstrap();
   await detectAndStart();
   updater.initUpdater({ onState: () => {} });

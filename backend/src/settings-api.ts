@@ -8,16 +8,21 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply } from "fastify";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, X509Certificate, createPrivateKey, type KeyObject } from "node:crypto";
 import { config } from "./config.js";
-import { getSettings, updateSettings, writeLivekitEnv, type Settings } from "./settings.js";
+import {
+  getSettings,
+  updateSettings,
+  writeLivekitEnv,
+  isValidHost,
+  type Settings,
+} from "./settings.js";
 import { reloadCaddy } from "./caddy.js";
 import { listCandidates } from "./network.js";
 import { isLiveKitReachable, resetStatsData } from "./stats.js";
 import { ensureDefaultEvent, resetEventsCache } from "./events.js";
 import { listCodes, resetCodesCache } from "./codes.js";
 import { listLanguages, resetLanguagesCache } from "./languages.js";
-import { resetAiConfigCache } from "./ai/config.js";
 import * as acme from "./acme/manager.js";
 import {
   withAcmeLock,
@@ -28,6 +33,36 @@ import {
 } from "./acme/renewal.js";
 
 const RESTART_FLAG = () => path.join(config.dataDir, ".restart-requested");
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Reject a PEM pair Caddy would refuse to load. A bad pair is persisted into
+ * settings.json, so it would also break every later Caddy start, not just this
+ * reload — the failure has to happen before the files are written.
+ */
+function assertUsableCertificate(certPem: string, keyPem: string): void {
+  let cert: X509Certificate;
+  let key: KeyObject;
+  try {
+    cert = new X509Certificate(certPem);
+    key = createPrivateKey(keyPem);
+  } catch (err) {
+    throw new Error(`invalid certificate or key: ${errorMessage(err)}`);
+  }
+  if (!cert.checkPrivateKey(key)) {
+    throw new Error("certificate and private key do not match");
+  }
+  const now = Date.now();
+  if (Date.parse(cert.validTo) < now) {
+    throw new Error(`certificate expired on ${cert.validTo}`);
+  }
+  if (Date.parse(cert.validFrom) > now) {
+    throw new Error(`certificate is not valid before ${cert.validFrom}`);
+  }
+}
 
 async function requestRestart(): Promise<void> {
   await fs.mkdir(config.dataDir, { recursive: true });
@@ -142,22 +177,39 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       customDomain?: string | null;
       netcupApiKey?: string;
     };
-  }>("/settings", async (req) => {
+  }>("/settings", async (req, reply) => {
     const body = req.body ?? {};
     const patch: Partial<Settings> = {};
     let restart = false;
 
     if (typeof body.adminPassword === "string" && body.adminPassword.trim()) {
-      patch.adminPassword = body.adminPassword.trim();
+      const pw = body.adminPassword.trim();
+      // The password is the only admin credential; a short one is guessable in
+      // a few minutes against the 60 req/min admin rate limit. The installer
+      // generates 24 hex chars, so this only rejects hand-set weak values.
+      if (pw.length < 12) {
+        return reply.code(400).send({ error: "adminPassword must be at least 12 characters" });
+      }
+      patch.adminPassword = pw;
     }
-    if (typeof body.listenerPort === "number" && body.listenerPort > 0 && body.listenerPort < 65536) {
-      patch.listenerPort = body.listenerPort;
+    if (typeof body.listenerPort !== "undefined") {
+      const port = body.listenerPort;
+      // Reject instead of silently ignoring: the UI would otherwise report
+      // "saved" for a port that never took effect.
+      if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+        return reply.code(400).send({ error: "listenerPort must be an integer between 1 and 65535" });
+      }
+      patch.listenerPort = port;
     }
     if (typeof body.languages === "string") {
       patch.languages = body.languages;
     }
     if (typeof body.customDomain !== "undefined") {
-      patch.customDomain = body.customDomain?.trim() || null;
+      const domain = body.customDomain?.trim() || null;
+      if (domain && !isValidHost(domain)) {
+        return reply.code(400).send({ error: "invalid domain" });
+      }
+      patch.customDomain = domain;
     }
     if (typeof body.netcupApiKey === "string" && body.netcupApiKey && !body.netcupApiKey.startsWith("…")) {
       patch.netcupApiKey = body.netcupApiKey.trim();
@@ -170,7 +222,11 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       restart = true;
     }
 
-    updateSettings(patch);
+    try {
+      updateSettings(patch);
+    } catch (err) {
+      return reply.code(500).send({ error: `could not save settings: ${errorMessage(err)}` });
+    }
     // Host/port/cert changes apply live via Caddy.
     const caddyReloaded = await reloadCaddy();
     if (restart) await requestRestart();
@@ -192,6 +248,7 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       }
       const { send, end } = openSse(reply);
       if (!domain) return (send({ error: "domain required" }), end());
+      if (!isValidHost(domain)) return (send({ error: "invalid domain" }), end());
       if (!apiKey) return (send({ error: "netcup API key required" }), end());
       const ac = beginAcmeOperation(reply);
       try {
@@ -229,6 +286,7 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
     }
     const { send, end } = openSse(reply);
     if (!domain) return (send({ error: "domain required" }), end());
+    if (!isValidHost(domain)) return (send({ error: "invalid domain" }), end());
     const ac = beginAcmeOperation(reply);
     try {
       const { certFile, keyFile } = await withAcmeLock(() =>
@@ -285,45 +343,68 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       if (!certPem?.includes("BEGIN CERTIFICATE") || !keyPem?.includes("PRIVATE KEY")) {
         return reply.code(400).send({ error: "certPem and keyPem required" });
       }
+      const ownDomain = domain?.trim() || null;
+      if (ownDomain && !isValidHost(ownDomain)) {
+        return reply.code(400).send({ error: "invalid domain" });
+      }
+      try {
+        assertUsableCertificate(certPem, keyPem);
+      } catch (err) {
+        return reply.code(400).send({ error: errorMessage(err) });
+      }
       const certsDir = path.join(config.dataDir, "certs");
       await fs.mkdir(certsDir, { recursive: true });
       const certFile = path.join(certsDir, "cert.pem");
       const keyFile = path.join(certsDir, "key.pem");
       await fs.writeFile(certFile, certPem, { mode: 0o600 });
       await fs.writeFile(keyFile, keyPem, { mode: 0o600 });
-      updateSettings({
-        ...(domain?.trim() ? { customDomain: domain.trim() } : {}),
-        customCertFile: certFile,
-        customKeyFile: keyFile,
-      });
+      try {
+        updateSettings({
+          ...(ownDomain ? { customDomain: ownDomain } : {}),
+          customCertFile: certFile,
+          customKeyFile: keyFile,
+        });
+      } catch (err) {
+        return reply.code(500).send({ error: `could not save settings: ${errorMessage(err)}` });
+      }
       const caddyReloaded = await reloadCaddy();
       return { ok: caddyReloaded, caddyReloaded, listenerUrl: listenerUrl(getSettings()) };
     },
   );
 
   // Revert to Caddy's internal CA.
-  app.post("/certificate/reset", async () => {
-    updateSettings({ customDomain: null, customCertFile: null, customKeyFile: null });
+  app.post("/certificate/reset", async (_req, reply) => {
+    try {
+      updateSettings({ customDomain: null, customCertFile: null, customKeyFile: null });
+    } catch (err) {
+      return reply.code(500).send({ error: `could not save settings: ${errorMessage(err)}` });
+    }
     const caddyReloaded = await reloadCaddy();
     return { ok: true, listenerUrl: listenerUrl(getSettings()), caddyReloaded };
   });
 
   // ---- Credentials + reset -------------------------------------------------
 
-  app.post("/credentials/regenerate", async () => {
+  app.post("/credentials/regenerate", async (_req, reply) => {
     const nextKey = `lk_${randomBytes(8).toString("hex")}`;
     const nextSecret = randomBytes(32).toString("base64url");
-    updateSettings({ livekitApiKey: nextKey, livekitApiSecret: nextSecret });
+    try {
+      updateSettings({ livekitApiKey: nextKey, livekitApiSecret: nextSecret });
+    } catch (err) {
+      return reply.code(500).send({ error: `could not save settings: ${errorMessage(err)}` });
+    }
     writeLivekitEnv();
     await requestRestart();
     return { ok: true, livekitApiKey: nextKey, restartRequired: true };
   });
 
-  // Wipe event data (events, codes, stats, AI config, backgrounds). Keeps
-  // credentials and settings. In-memory caches are reset and the defaults are
-  // re-seeded, so no process restart is needed.
+  // Wipe event data (events, codes, languages, stats, backgrounds). Keeps
+  // credentials and settings — ai-config.json holds the OpenRouter key and model,
+  // which are credentials, and the admin UI never offered to delete them.
+  // In-memory caches are reset and the defaults are re-seeded, so no process
+  // restart is needed.
   app.post("/reset", async () => {
-    const files = ["events.json", "codes.json", "languages.json", "stats.json", "ai-config.json"];
+    const files = ["events.json", "codes.json", "languages.json", "stats.json"];
     for (const f of files) {
       await fs.rm(path.join(config.dataDir, f), { force: true });
     }
@@ -337,7 +418,6 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
     resetEventsCache();
     resetCodesCache();
     resetLanguagesCache();
-    resetAiConfigCache();
     resetStatsData();
 
     // Re-seed the defaults so the admin UI stays usable immediately.

@@ -31,8 +31,6 @@ extraResources:
     to: "backend/node_modules"
   - from: "../frontend/dist"
     to: "frontend/dist"
-  - from: "resources/Caddyfile.tmpl"
-    to: "Caddyfile"
   - from: "resources/livekit.yaml"
     to: "livekit.yaml"
   - from: "resources/tray-icon.png"

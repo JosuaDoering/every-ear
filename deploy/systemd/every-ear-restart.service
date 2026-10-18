@@ -1,0 +1,15 @@
+[Unit]
+Description=Every Ear restart of backend + LiveKit after a web-admin change
+Documentation=https://github.com/JosuaDoering/every-ear
+# Bounded: a marker that keeps reappearing must not spin.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+# Remove the marker first: the backend only clears it on boot, and leaving it
+# in place would make this unit restart the stack again on every boot.
+# The short delay lets the admin request that wrote the marker finish its HTTP
+# response before this unit tears the backend down.
+ExecStart=/bin/sh -c 'rm -f /var/lib/every-ear/.restart-requested; sleep 3; systemctl restart every-ear-livekit.service every-ear-backend.service'
+TimeoutStartSec=90

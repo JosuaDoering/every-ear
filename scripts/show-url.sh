@@ -4,8 +4,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [ ! -f .env ]; then
-  echo "No .env — run scripts/install-mac.sh first." >&2
+if [ ! -f .env ] && [ ! -f backend/data/settings.json ] && [ -z "${EVERY_EAR_DATA_DIR:-}" ]; then
+  echo "No .env and no backend/data/settings.json — run an install script first." >&2
   exit 1
 fi
 

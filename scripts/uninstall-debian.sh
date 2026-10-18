@@ -13,10 +13,10 @@ PURGE="${PURGE:-0}"
 [ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo $0" >&2; exit 1; }
 
 echo "→ Stopping and disabling services…"
-systemctl disable --now every-ear-caddy every-ear-backend every-ear-livekit 2>/dev/null || true
+systemctl disable --now every-ear-caddy every-ear-backend every-ear-livekit every-ear-restart.path 2>/dev/null || true
 
 echo "→ Removing systemd units…"
-rm -f /etc/systemd/system/every-ear-{livekit,backend,caddy}.service
+rm -f /etc/systemd/system/every-ear-{livekit,backend,caddy,restart}.{service,path}
 systemctl daemon-reload
 
 echo "→ Removing tuning + logrotate…"

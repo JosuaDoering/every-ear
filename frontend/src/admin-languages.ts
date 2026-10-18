@@ -2,7 +2,7 @@
 
 import { fetchLanguages, type Language } from "./livekit.js";
 import { loadAdminToken, clearAdminToken } from "./session.js";
-import { toast, confirmDialog } from "./ui.js";
+import { escapeHtml, toast, confirmDialog } from "./ui.js";
 import { renderAdminNav } from "./admin-nav.js";
 
 const token = loadAdminToken();
@@ -34,11 +34,6 @@ window.addEventListener("unhandledrejection", (e) => {
   e.preventDefault();
 });
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!),
-  );
-}
 
 const $langList = document.getElementById("lang-list") as HTMLDivElement;
 const $addLangForm = document.getElementById("add-lang-form") as HTMLFormElement;

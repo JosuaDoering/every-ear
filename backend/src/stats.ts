@@ -12,7 +12,6 @@
 // source of truth, so missed/dropped webhooks self-heal. Counts survive restarts
 // via stats.json.
 
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   RoomServiceClient,
@@ -20,7 +19,7 @@ import {
   WebhookReceiver,
 } from "livekit-server-sdk";
 import { config } from "./config.js";
-import { writeAtomic } from "./store.js";
+import { readJsonStore, writeAtomic } from "./store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // How often we rebuild the authoritative counts from LiveKit. The webhook path
@@ -52,7 +51,8 @@ const model: StatsModel = { rooms: {} };
 const activeListenerIdentities = new Map<string, Set<string>>();
 
 let client: RoomServiceClient | null = null;
-let receiver: WebhookReceiver | null = null;
+let clientCredentials: { key: string; secret: string } | null = null;
+let receiver: { key: string; secret: string; instance: WebhookReceiver } | null = null;
 let timer: NodeJS.Timeout | null = null;
 let persistTimer: NodeJS.Timeout | null = null;
 let dirty = false;
@@ -102,23 +102,22 @@ function recordPeak(room: string, listeners: number): void {
 }
 
 async function load(): Promise<void> {
-  try {
-    const raw = await fs.readFile(statsFile(), "utf8");
-    const parsed = JSON.parse(raw) as Partial<StatsModel>;
-    if (parsed && typeof parsed === "object" && parsed.rooms) {
-      for (const [room, rs] of Object.entries(parsed.rooms)) {
-        model.rooms[room] = {
-          broadcastSeconds: Number(rs?.broadcastSeconds) || 0,
-          listeners:
-            rs?.listeners && typeof rs.listeners === "object" ? rs.listeners : {},
-          history:
-            rs?.history && typeof rs.history === "object" ? rs.history : {},
-        };
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.error("[stats] failed to read stats.json:", err);
+  // A corrupt stats.json only costs history, so it is moved aside and the
+  // collector starts empty instead of aborting start-up.
+  const parsed = await readJsonStore<Partial<StatsModel> | null>(
+    statsFile(),
+    (raw) => (raw && typeof raw === "object" ? (raw as Partial<StatsModel>) : null),
+    null,
+  );
+  if (parsed?.rooms) {
+    for (const [room, rs] of Object.entries(parsed.rooms)) {
+      model.rooms[room] = {
+        broadcastSeconds: Number(rs?.broadcastSeconds) || 0,
+        listeners:
+          rs?.listeners && typeof rs.listeners === "object" ? rs.listeners : {},
+        history:
+          rs?.history && typeof rs.history === "object" ? rs.history : {},
+      };
     }
   }
 }
@@ -178,18 +177,35 @@ export function resetStatsData(): void {
   dirty = false;
 }
 
+/** RoomService client, rebuilt when the admin rotates the LiveKit credentials. */
+function liveKitClient(): RoomServiceClient | null {
+  const key = config.apiKey;
+  const secret = config.apiSecret;
+  if (!key || !secret) return null;
+  if (
+    !client ||
+    clientCredentials?.key !== key ||
+    clientCredentials?.secret !== secret
+  ) {
+    client = new RoomServiceClient(liveKitUrl(), key, secret);
+    clientCredentials = { key, secret };
+  }
+  return client;
+}
+
 // Authoritative rebuild from the RoomService API. Cheap enough to run every
 // RECONCILE_MS and corrects any drift from missed webhook events.
 async function reconcile(): Promise<void> {
-  if (!client || reconciling) return;
+  if (!liveKitClient() || reconciling) return;
   reconciling = true;
   const now = Date.now();
   try {
-    const rooms = await client.listRooms();
+    const lk = liveKitClient()!;
+    const rooms = await lk.listRooms();
     const seen = new Set<string>();
     for (const room of rooms) {
       seen.add(room.name);
-      const participants = await client.listParticipants(room.name);
+      const participants = await lk.listParticipants(room.name);
       const set = new Set<string>();
       let broadcasting = false;
       for (const p of participants) {
@@ -229,11 +245,15 @@ async function reconcile(): Promise<void> {
 
 // ---- Webhook handling ------------------------------------------------------
 
+// A rotated credential must also take effect in the webhook verifier; cache it
+// per key/secret pair instead of pinning whatever the process started with.
 function webhookReceiver(): WebhookReceiver {
-  if (!receiver) {
-    receiver = new WebhookReceiver(config.apiKey, config.apiSecret);
+  const key = config.apiKey;
+  const secret = config.apiSecret;
+  if (!receiver || receiver.key !== key || receiver.secret !== secret) {
+    receiver = { key, secret, instance: new WebhookReceiver(key, secret) };
   }
-  return receiver;
+  return receiver.instance;
 }
 
 function addActiveListener(room: string, identity: string): void {
@@ -284,7 +304,6 @@ export function isLiveKitReachable(): boolean {
 
 export async function startStatsCollector(): Promise<void> {
   await load();
-  client = new RoomServiceClient(liveKitUrl(), config.apiKey, config.apiSecret);
   void reconcile();
   timer = setInterval(() => void reconcile(), RECONCILE_MS);
   timer.unref?.();

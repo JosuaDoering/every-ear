@@ -6,15 +6,27 @@
 
 import { setTimeout as delay } from "node:timers/promises";
 
-export type TranslateError = { status: number; message: string; retryAfterMs?: number };
+export type TranslateError = {
+  status: number;
+  message: string;
+  retryAfterMs?: number;
+  /** Set when the error is final regardless of status (e.g. circuit open). */
+  retryable?: false;
+};
 
 function isRetryableStatus(status: number): boolean {
   // 429 = rate limit, 5xx = transient server/upstream errors.
   return status === 429 || (status >= 500 && status <= 599);
 }
 
+function isRetryable(err: TranslateError): boolean {
+  // An open circuit reports 503, which would otherwise look transient: retrying
+  // it would re-queue the very request the breaker is trying to shed.
+  return err.retryable !== false && isRetryableStatus(err.status);
+}
+
 /** Parse a Retry-After header (seconds or HTTP-date) into milliseconds. */
-function parseRetryAfter(value: string | null): number | undefined {
+export function parseRetryAfter(value: string | null): number | undefined {
   if (!value) return undefined;
   const secs = Number(value);
   if (Number.isFinite(secs)) return Math.min(Math.max(secs, 0), 60) * 1000;
@@ -39,13 +51,22 @@ export class Semaphore {
       this.active++;
       return;
     }
+    // The releasing caller hands its slot over directly (see release), so a
+    // waiter never re-increments after being woken — that would allow a
+    // concurrent acquire() to slip in between the decrement and the resume.
     await new Promise<void>((resolve) => this.waiters.push(resolve));
-    this.active++;
   }
   release(): void {
-    this.active--;
     const next = this.waiters.shift();
-    if (next) next();
+    if (next) {
+      next();
+      return;
+    }
+    this.active--;
+  }
+  /** Diagnostic only: current in-flight count, never above `max`. */
+  get inFlight(): number {
+    return this.active;
   }
 }
 
@@ -72,7 +93,11 @@ export class CircuitBreaker {
       if (Date.now() - this.openedAt >= this.resetMs) {
         this.state = "half-open";
       } else {
-        throw { status: 503, message: "translation circuit open (upstream unavailable)" } satisfies TranslateError;
+        throw {
+          status: 503,
+          message: "translation circuit open (upstream unavailable)",
+          retryable: false,
+        } satisfies TranslateError;
       }
     }
   }
@@ -84,7 +109,7 @@ export class CircuitBreaker {
 
   onFailure(err: TranslateError): void {
     // Only trip on retryable (transient) errors, not on 4xx client errors.
-    if (!isRetryableStatus(err.status)) {
+    if (!isRetryable(err)) {
       return;
     }
     this.consecutiveFailures++;
@@ -120,7 +145,7 @@ export async function withRetry<T>(
     } catch (err) {
       lastErr = err;
       const e = err as TranslateError;
-      const retryable = typeof e?.status === "number" && isRetryableStatus(e.status);
+      const retryable = typeof e?.status === "number" && isRetryable(e);
       if (!retryable || attempt === maxAttempts) throw err;
       // Backoff: base * 2^(attempt-1) + jitter, capped at 10s; honour Retry-After.
       const exp = Math.min(baseMs * 2 ** (attempt - 1), 10_000);

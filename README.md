@@ -119,7 +119,7 @@ the web admin, sign in with it, and change it under **Settings → Admin passwor
 3. Share the listener URL or QR code with your guests (e.g. on a screen or printout).
 4. Generate a code for each translator: open each **Event** to add translator codes. The global language catalog lives under **Languages**, the AI provider under **AI translation**, and system settings under **Settings**.
 
-Translators open the translator URL via the QR code (or manually: listener URL with `/translator.html` appended), enter their 6-digit code, and allow microphone access when prompted.
+Translators open the translator URL via the QR code (or manually: listener URL with `/translator-login.html` appended), enter their 6-digit code, and allow microphone access when prompted.
 
 Listeners open the listener URL (or scan the QR code), choose an event and language, and press play. On iOS, audio only starts after a tap, due to browser policy. The first time a device connects it may show a certificate warning (see below).
 

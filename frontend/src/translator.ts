@@ -8,7 +8,7 @@ import {
 } from "livekit-client";
 import { livekitUrl, fetchLanguages } from "./livekit.js";
 import { loadTranslatorGrant, clearTranslatorGrant } from "./session.js";
-import { setButtonLoading } from "./ui.js";
+import { escapeHtml, setButtonLoading } from "./ui.js";
 import { SentenceChunker } from "./ai/chunker.js";
 import { SpeechToText } from "./ai/stt.js";
 import { encodeCaption } from "./ai/types.js";
@@ -110,7 +110,9 @@ function renderAiChannels() {
     const row = document.createElement("div");
     row.className = "ai-channel-row";
     row.dataset.code = ai.code;
-    row.innerHTML = `<span class="ai-channel-lang">${ai.flag} ${ai.name}</span>
+    row.innerHTML = `<span class="ai-channel-lang">${escapeHtml(ai.flag)} ${escapeHtml(
+      ai.name,
+    )}</span>
       <span class="ai-channel-state" data-state="idle">idle</span>`;
     $aiChannels.appendChild(row);
   }
@@ -418,7 +420,14 @@ function startTranslatorCaptions(r: Room, lang: string) {
   });
   stt = new SpeechToText(lang, {
     onTranscript: (text) => chunker?.push(text),
-    onRestart: () => chunker?.reset(),
+    onRestart: () => {
+      // The session is ending mid-sentence: keep the pending words, then reset.
+      chunker?.flush();
+      chunker?.reset();
+    },
+    // Audio keeps flowing, but listeners would silently lose captions. Say so
+    // instead of showing an on-air translator without subtitles.
+    onError: (msg) => setStatus(`Captions stopped: ${msg}. Audio is unaffected.`, true),
   });
   stt.start();
 }
@@ -426,6 +435,8 @@ function startTranslatorCaptions(r: Room, lang: string) {
 function stopCaptions() {
   stt?.stop();
   stt = null;
+  // Publish the last unfinished sentence; the room is still up at this point.
+  chunker?.flush();
   chunker?.stop();
   chunker = null;
 }

@@ -50,3 +50,53 @@ export function writeAtomicSync(file: string, data: string, mode?: number): void
 export async function persistJsonAtomic(file: string, value: unknown): Promise<void> {
   await withLock(file, () => writeAtomic(file, JSON.stringify(value, null, 2)));
 }
+
+/**
+ * Run `task` at most once at a time per `key`, sharing the pending promise with
+ * every concurrent caller. Used by the stores' lazy `load()`: the load awaits
+ * the file read, so without this two callers that arrive before the cache is
+ * filled would each build their own Map and the later write would discard the
+ * earlier one's mutation.
+ */
+const inflight = new Map<string, Promise<unknown>>();
+
+export function once<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const next = task().finally(() => inflight.delete(key));
+  inflight.set(key, next);
+  return next;
+}
+
+/** Forget a key's pending load (a reset while a load is still running). */
+export function forgetPending(key: string): void {
+  inflight.delete(key);
+}
+
+/**
+ * Read and parse a JSON store, downgrading a corrupt file to "empty" instead of
+ * aborting boot. A single truncated write (power loss, full disk) must never
+ * take the whole service down mid-event; the bad file is moved aside so it can
+ * be inspected and, if possible, repaired afterwards.
+ */
+export async function readJsonStore<T>(
+  file: string,
+  parse: (raw: unknown) => T,
+  fallback: T,
+): Promise<T> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    throw err;
+  }
+  try {
+    return parse(JSON.parse(raw));
+  } catch (err) {
+    const backup = `${file}.corrupt-${Date.now()}`;
+    console.error(`[store] ${path.basename(file)} is unreadable, backing up to ${backup}:`, err);
+    await fs.rename(file, backup).catch(() => undefined);
+    return fallback;
+  }
+}

@@ -1,5 +1,14 @@
 // Small UI helpers shared by all pages. Hand-rolled, no dependencies.
 
+// ---- Escaping --------------------------------------------------------------
+
+/** Escape a value before interpolating it into an innerHTML template. */
+export function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!),
+  );
+}
+
 // ---- Toast notifications ---------------------------------------------------
 
 type ToastKind = "info" | "success" | "error";
@@ -22,7 +31,10 @@ export function toast(message: string, kind: ToastKind = "info", ms = 3200): voi
   stack.appendChild(el);
   window.setTimeout(() => {
     el.classList.add("is-leaving");
+    // `animationend` never fires when the user prefers reduced motion (no
+    // animation at all), which would pin the toast on screen forever.
     el.addEventListener("animationend", () => el.remove(), { once: true });
+    window.setTimeout(() => el.remove(), 400);
   }, ms);
 }
 

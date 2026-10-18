@@ -2,6 +2,7 @@ import { loadAiConfig } from "./config.js";
 import {
   openRouterSemaphore,
   openRouterBreaker,
+  parseRetryAfter,
   translationCache,
   withRetry,
   type TranslateError,
@@ -122,15 +123,6 @@ async function fetchOnce(
   }
 
   return full;
-}
-
-function parseRetryAfter(value: string | null): number | undefined {
-  if (!value) return undefined;
-  const secs = Number(value);
-  if (Number.isFinite(secs)) return Math.min(Math.max(secs, 0), 60) * 1000;
-  const date = Date.parse(value);
-  if (Number.isFinite(date)) return Math.min(Math.max(date - Date.now(), 0), 60_000);
-  return undefined;
 }
 
 export type { TranslateError };

@@ -3,7 +3,13 @@
 
 import { fetchLanguages, type Language } from "./livekit.js";
 import { loadAdminToken, clearAdminToken } from "./session.js";
-import { toast, confirmDialog, setButtonLoading, inlineEdit } from "./ui.js";
+import {
+  escapeHtml,
+  toast,
+  confirmDialog,
+  setButtonLoading,
+  inlineEdit,
+} from "./ui.js";
 import { renderAdminNav } from "./admin-nav.js";
 
 const token = loadAdminToken();
@@ -110,11 +116,6 @@ window.addEventListener("unhandledrejection", (e) => {
   e.preventDefault();
 });
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!),
-  );
-}
 
 function formatRelative(iso: string, label: string): string {
   const d = new Date(iso);
@@ -143,7 +144,7 @@ function renderLangPicker(target: HTMLDivElement, selected: Set<string>) {
     wrap.className = "lang-chip";
     wrap.innerHTML = `<input type="checkbox" value="${escapeHtml(l.code)}" ${
       selected.has(l.code) ? "checked" : ""
-    }><span>${l.flag} ${escapeHtml(l.name)}</span>`;
+    }><span>${escapeHtml(l.flag)} ${escapeHtml(l.name)}</span>`;
     target.appendChild(wrap);
   }
 }
@@ -326,7 +327,7 @@ function renderCodes() {
     meta.className = "code-meta";
     const langChip = isAi
       ? `<span class="code-lang ai-pill">🤖 AI operator</span>`
-      : `<span class="code-lang">${lang?.flag ?? "🏳️"} ${escapeHtml(
+      : `<span class="code-lang">${escapeHtml(lang?.flag ?? "🏳️")} ${escapeHtml(
           lang?.name ?? c.language.toUpperCase(),
         )}</span>`;
     meta.innerHTML = `<strong>${escapeHtml(c.name)}</strong>
@@ -635,7 +636,7 @@ function renderChannelStats(channels: ChannelStat[]) {
     const lang = languages.find((l) => l.code === c.language);
     const row = document.createElement("div");
     row.className = "stat-row";
-    const label = `${lang?.flag ?? "🏳️"} ${escapeHtml(
+    const label = `${escapeHtml(lang?.flag ?? "🏳️")} ${escapeHtml(
       lang?.name ?? c.language.toUpperCase(),
     )}${c.ai ? ' <span class="ai-pill">🤖 AI</span>' : ""}`;
     row.innerHTML = `

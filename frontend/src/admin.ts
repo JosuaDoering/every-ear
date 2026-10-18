@@ -5,7 +5,7 @@ import QRCode from "qrcode";
 import { renderPoster, type WifiAuth } from "./poster.js";
 import { fetchLanguages, type Language } from "./livekit.js";
 import { loadAdminToken, clearAdminToken } from "./session.js";
-import { toast, setButtonLoading } from "./ui.js";
+import { escapeHtml, toast, setButtonLoading } from "./ui.js";
 import { renderAdminNav } from "./admin-nav.js";
 
 const token = loadAdminToken();
@@ -77,11 +77,6 @@ function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
   return fetch(url, { ...init, headers });
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!),
-  );
-}
 
 function signOut() {
   clearAdminToken();
@@ -132,7 +127,7 @@ function renderLangPicker(target: HTMLDivElement, selected: Set<string>) {
     wrap.className = "lang-chip";
     wrap.innerHTML = `<input type="checkbox" value="${escapeHtml(l.code)}" ${
       selected.has(l.code) ? "checked" : ""
-    }><span>${l.flag} ${escapeHtml(l.name)}</span>`;
+    }><span>${escapeHtml(l.flag)} ${escapeHtml(l.name)}</span>`;
     target.appendChild(wrap);
   }
 }
@@ -200,7 +195,7 @@ function renderEventGrid() {
       const langChips = e.languages
         .map((c) => languages.find((l) => l.code === c))
         .filter((l): l is Language => Boolean(l))
-        .map((l) => `<span title="${escapeHtml(l.name)}">${l.flag}</span>`)
+        .map((l) => `<span title="${escapeHtml(l.name)}">${escapeHtml(l.flag)}</span>`)
         .join("");
       const codeCount = codeCounts.get(e.id) ?? 0;
       const bgChip = e.backgroundExt
@@ -274,7 +269,10 @@ $eventForm.addEventListener("submit", async (e) => {
     });
     if (res.status === 401) return signOut();
     if (!res.ok) {
-      toast(`Could not create event (HTTP ${res.status})`, "error");
+      // The backend explains *why* (e.g. an overlap between manual and AI
+      // languages); showing only the status leaves the admin guessing.
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      toast(body.error ?? `Could not create event (HTTP ${res.status})`, "error");
       return;
     }
     const created = (await res.json()) as EventEntry;
@@ -332,14 +330,20 @@ $eventForm.addEventListener("submit", async (e) => {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as {
       ssid?: string;
       auth?: WifiAuth;
-      password?: string;
       hidden?: boolean;
+      password?: string;
     } | null;
     if (saved) {
       $wifiSsid.value = saved.ssid ?? "";
       $wifiAuth.value = saved.auth ?? "WPA";
-      $wifiPassword.value = saved.password ?? "";
       $wifiHidden.checked = !!saved.hidden;
+      if (saved.password) {
+        // Older builds persisted the network password; scrub it on next use.
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ssid: saved.ssid, auth: saved.auth, hidden: saved.hidden }),
+        );
+      }
     }
   } catch {
     /* ignore malformed storage */
@@ -366,15 +370,28 @@ $eventForm.addEventListener("submit", async (e) => {
     return `${currentTarget}-${net}`;
   }
 
+  // The poster is meant to be scanned by guests, so it must point at the
+  // LAN/domain address the backend advertises — never at the admin's own
+  // window.location (often http://127.0.0.1), which no phone can reach.
+  let publicBaseUrl: string | null = null;
+  async function loadPublicBaseUrl(): Promise<string> {
+    if (publicBaseUrl) return publicBaseUrl;
+    const res = await authedFetch("/api/admin/settings");
+    if (!res.ok) throw new Error(`Could not load the public URL (HTTP ${res.status}).`);
+    const data = (await res.json()) as { urls?: { listener?: string } };
+    const url = data.urls?.listener;
+    if (!url) throw new Error("Could not determine the public URL.");
+    publicBaseUrl = url.replace(/\/+$/, "");
+    return publicBaseUrl;
+  }
+
   const TARGETS = {
     listener: {
-      url: window.location.origin + "/",
       heading: "Listen live",
       instruction: "Scan, pick your language, press play.",
       button: $posterListener,
     },
     translator: {
-      url: window.location.origin + "/translator-login.html",
       heading: "Translator login",
       instruction: "Scan to log in and broadcast a language.",
       button: $posterTranslator,
@@ -402,13 +419,15 @@ $eventForm.addEventListener("submit", async (e) => {
     setButtonLoading(t.button, true);
     $posterStatus.textContent = "Generating…";
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ ssid, auth, password: auth === "nopass" ? "" : password, hidden }),
-      );
+      // Remember only the non-secret fields: the Wi-Fi password is never
+      // written to localStorage (it stays readable to any script on the origin).
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ssid, auth, hidden }));
+      const base = await loadPublicBaseUrl();
+      const url =
+        which === "listener" ? `${base}/` : `${base}/translator-login.html`;
       await renderPoster($posterCanvas, {
         title: "Live Translation",
-        target: { url: t.url, heading: t.heading, instruction: t.instruction },
+        target: { url, heading: t.heading, instruction: t.instruction },
         wifi: { ssid, password, auth, hidden },
       });
       $posterPreview.hidden = false;

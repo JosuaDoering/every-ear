@@ -43,6 +43,9 @@ type Prefs = { eventId?: string; language?: string };
 
 let room: Room | null = null;
 let levelTimer: number | null = null;
+// Kept so the meter can be torn down: an AudioContext holds a real audio graph
+// and hitting the browser's context limit silently breaks later calls.
+let levelCtx: AudioContext | null = null;
 let events: EventEntry[] = [];
 
 function loadPrefs(): Prefs {
@@ -192,6 +195,7 @@ function startLevelMeter() {
   if (!$audio.srcObject) return;
   const stream = $audio.srcObject as MediaStream;
   const ctx = new AudioContext();
+  levelCtx = ctx;
   const src = ctx.createMediaStreamSource(stream);
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 256;
@@ -210,6 +214,10 @@ function stopLevelMeter() {
   if (levelTimer != null) {
     clearInterval(levelTimer);
     levelTimer = null;
+  }
+  if (levelCtx) {
+    void levelCtx.close().catch(() => undefined);
+    levelCtx = null;
   }
 }
 
@@ -346,6 +354,14 @@ async function start() {
     console.error(err);
     setStatus(err instanceof Error ? err.message : "Unknown error", true);
     setPlaying(false);
+    // A failed connect still left `room` assigned, so the play button would
+    // take the "stop" branch on the next tap and never retry the connection.
+    if (room) {
+      await room.disconnect().catch(() => undefined);
+      room = null;
+    }
+    detachAll();
+    $nowPlaying.hidden = true;
   } finally {
     $play.disabled = false;
   }

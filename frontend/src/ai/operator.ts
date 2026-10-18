@@ -18,11 +18,17 @@ const INTERIM_THROTTLE_MS = 300;
 
 async function streamTranslate(
   body: { text: string; sourceLang: string; targetLang: string; context: string[] },
+  token: string,
   onDelta: (full: string) => void,
 ): Promise<string> {
   const res = await fetch("/api/ai/translate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // The backend verifies this LiveKit token: translation spends the
+      // server's OpenRouter key, so it must be tied to this event/room.
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok || !res.body) throw new Error(`translate failed (${res.status})`);
@@ -101,10 +107,25 @@ export class AiOperator {
       }
     }
 
+    // Without a single connected channel the operator would look "on air"
+    // while publishing nothing, so fail loudly instead.
+    if (this.channels.length === 0) {
+      this.running = false;
+      throw new Error("Could not connect to any AI language room.");
+    }
+
     this.chunker = new SentenceChunker((chunk) => this.onChunk(chunk.id, chunk.text));
     this.stt = new SpeechToText(this.getSourceLang(), {
       onTranscript: (text) => this.chunker?.push(text),
-      onRestart: () => this.chunker?.reset(),
+      onRestart: () => {
+        this.chunker?.flush();
+        this.chunker?.reset();
+      },
+      // Without this the channel rows keep saying "live" while recognition has
+      // stopped for good (mic revoked, engine error) and nothing is published.
+      onError: (msg) => {
+        for (const ch of this.channels) this.onStatus(ch.code, "error", msg);
+      },
     });
     this.stt.start();
   }
@@ -157,6 +178,7 @@ export class AiOperator {
     try {
       const finalText = await streamTranslate(
         { text, sourceLang, targetLang: ch.code, context },
+        ch.token,
         (partial) => {
           const now = Date.now();
           const last = this.lastInterim.get(ch.code) ?? 0;
@@ -186,12 +208,26 @@ export class AiOperator {
   }
 
   async stop(): Promise<void> {
-    this.running = false;
+    // Emit the last, still-unfinished sentence before tearing the rooms down:
+    // stopping the operator otherwise silently drops the speaker's last words.
+    // The translation it starts is asynchronous, so give it a moment before
+    // disconnecting (bounded — stopping must still feel immediate).
+    this.chunker?.flush();
     this.stt?.stop();
     this.stt = null;
     this.chunker?.stop();
     this.chunker = null;
+    await this.waitForIdle(2500);
+    this.running = false;
     await Promise.all(this.channels.map((c) => c.lkRoom.disconnect()));
     this.channels = [];
+  }
+
+  /** Resolve once no channel has a translation in flight or pending, or after `ms`. */
+  private async waitForIdle(ms: number): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline && (this.inFlight.size > 0 || this.pending.size > 0)) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 }
