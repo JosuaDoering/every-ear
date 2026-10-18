@@ -23,26 +23,57 @@ function cacheKey(text: string, sourceName: string, targetName: string): string 
   return `${sourceName}\u0000${targetName}\u0000${text}`;
 }
 
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/** Abort when the client disconnects or the upstream stalls. */
+function requestSignal(client?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  return client ? AbortSignal.any([timeout, client]) : timeout;
+}
+
+function mapNetworkError(err: unknown, client?: AbortSignal): TranslateError {
+  if (client?.aborted) {
+    return { status: 499, message: "client disconnected" };
+  }
+  if (
+    err instanceof DOMException &&
+    (err.name === "TimeoutError" || err.name === "AbortError")
+  ) {
+    return { status: 504, message: "translation request timed out" };
+  }
+  return {
+    status: 502,
+    message: err instanceof Error ? err.message : "translation request failed",
+  };
+}
+
 /** Fetch the SSE stream from OpenRouter once (no retry). Throws TranslateError. */
 async function fetchOnce(
   messages: ChatMessage[],
   cfg: Awaited<ReturnType<typeof loadAiConfig>>,
   onDelta: (full: string) => void,
+  clientSignal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${cfg.openRouterApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      stream: true,
-      temperature: cfg.temperature,
-      max_tokens: 1024,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.openRouterApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages,
+        stream: true,
+        temperature: cfg.temperature,
+        max_tokens: 1024,
+      }),
+      signal: requestSignal(clientSignal),
+    });
+  } catch (err) {
+    throw mapNetworkError(err, clientSignal);
+  }
 
   if (!res.ok || !res.body) {
     const body = await res.text().catch(() => "");
@@ -59,31 +90,35 @@ async function fetchOnce(
   let buf = "";
   let full = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
 
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (data === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(data) as {
-          choices?: { delta?: { content?: string } }[];
-        };
-        const piece = parsed.choices?.[0]?.delta?.content;
-        if (piece) {
-          full += piece;
-          onDelta(full);
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data) as {
+            choices?: { delta?: { content?: string } }[];
+          };
+          const piece = parsed.choices?.[0]?.delta?.content;
+          if (piece) {
+            full += piece;
+            onDelta(full);
+          }
+        } catch {
+          // Ignore keep-alive/comment lines and partial JSON.
         }
-      } catch {
-        // Ignore keep-alive/comment lines and partial JSON.
       }
     }
+  } catch (err) {
+    throw mapNetworkError(err, clientSignal);
   }
 
   return full;
@@ -115,6 +150,7 @@ export async function translateStream(
   targetName: string,
   context: string[],
   onDelta: (full: string) => void,
+  clientSignal?: AbortSignal,
 ): Promise<string> {
   const cfg = await loadAiConfig();
   if (!cfg.openRouterApiKey || !cfg.model) {
@@ -148,7 +184,7 @@ export async function translateStream(
       await openRouterSemaphore.acquire();
       try {
         openRouterBreaker.guard(); // re-check after waiting in the queue
-        return await fetchOnce(messages, cfg, onDelta);
+        return await fetchOnce(messages, cfg, onDelta, clientSignal);
       } finally {
         openRouterSemaphore.release();
       }

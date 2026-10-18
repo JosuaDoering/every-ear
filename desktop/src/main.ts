@@ -89,44 +89,68 @@ async function detectAndStart(): Promise<void> {
   }
 }
 
+let restartInFlight = false;
+let restartQueued = false;
+let ipCheckBusy = false;
+
 async function restartStack(): Promise<void> {
-  const settings = loadSettings();
-  const next = currentCandidate ?? (await pickCandidate(settings.preferredInterface));
-  const host = next?.address ?? FALLBACK_HOST;
-  await supervisor.restart({
-    publicHost: host,
-    listenerPort: settings.listenerPort,
-    dataDir: dataDir(),
-  });
+  // Coalesce bursts of change signals (network + restart flag) into one
+  // restart instead of queueing several.
+  if (restartInFlight) {
+    restartQueued = true;
+    return;
+  }
+  restartInFlight = true;
+  try {
+    do {
+      restartQueued = false;
+      const settings = loadSettings();
+      const next = currentCandidate ?? (await pickCandidate(settings.preferredInterface));
+      const host = next?.address ?? FALLBACK_HOST;
+      await supervisor.restart({
+        publicHost: host,
+        listenerPort: settings.listenerPort,
+        dataDir: dataDir(),
+      });
+    } while (restartQueued);
+  } finally {
+    restartInFlight = false;
+  }
 }
 
 function startWatchers(): void {
   // Re-evaluate the IP every 5s. A change restarts the stack with the new
   // public host and the QR/listener URL changes.
   ipWatcher = setInterval(async () => {
-    const settings = loadSettings();
-    const next = await pickCandidate(settings.preferredInterface);
-    if (!next) {
-      // Lost the network: keep the stack up on loopback (admin stays reachable).
-      if (currentCandidate) {
-        currentCandidate = null;
-        updateSettings({ publicHost: FALLBACK_HOST });
-        await restartStack();
-        showNotification(
-          "No network — listeners are offline, but the web admin stays available on this machine.",
-        );
+    if (ipCheckBusy) return;
+    ipCheckBusy = true;
+    try {
+      const settings = loadSettings();
+      const next = await pickCandidate(settings.preferredInterface);
+      if (!next) {
+        // Lost the network: keep the stack up on loopback (admin stays reachable).
+        if (currentCandidate) {
+          currentCandidate = null;
+          updateSettings({ publicHost: FALLBACK_HOST });
+          await restartStack();
+          showNotification(
+            "No network — listeners are offline, but the web admin stays available on this machine.",
+          );
+        }
+        return;
       }
-      return;
-    }
-    if (
-      !currentCandidate ||
-      currentCandidate.iface !== next.iface ||
-      currentCandidate.address !== next.address
-    ) {
-      currentCandidate = next;
-      updateSettings({ publicHost: next.address });
-      await restartStack();
-      showNotification(`Network changed — listeners now connect to https://${next.address}:${LISTENER_PORT}/`);
+      if (
+        !currentCandidate ||
+        currentCandidate.iface !== next.iface ||
+        currentCandidate.address !== next.address
+      ) {
+        currentCandidate = next;
+        updateSettings({ publicHost: next.address });
+        await restartStack();
+        showNotification(`Network changed — listeners now connect to https://${next.address}:${LISTENER_PORT}/`);
+      }
+    } finally {
+      ipCheckBusy = false;
     }
   }, 5000);
 

@@ -19,6 +19,11 @@ const DEFAULT_FLAGS: Record<string, string> = {
 const file = () => path.join(config.dataDir, "languages.json");
 let cache: Map<string, LanguageEntry> | null = null;
 
+/** Drop the in-memory cache (used by the admin data reset). */
+export function resetLanguagesCache(): void {
+  cache = null;
+}
+
 export function defaultFlagFor(code: string): string {
   return DEFAULT_FLAGS[code.toLowerCase()] ?? "🏳️";
 }

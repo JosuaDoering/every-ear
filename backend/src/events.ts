@@ -25,6 +25,11 @@ const eventsFile = () => path.join(config.dataDir, "events.json");
 
 let cache: Map<string, Event> | null = null;
 
+/** Drop the in-memory cache (used by the admin data reset). */
+export function resetEventsCache(): void {
+  cache = null;
+}
+
 function makeId(): string {
   return randomBytes(6).toString("hex");
 }

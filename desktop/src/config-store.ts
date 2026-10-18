@@ -6,7 +6,7 @@
 // secrets are re-exported as process.env on the child processes anyway, so
 // encrypting at rest would be performative.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dataDir, settingsPath } from "./paths";
 
 export type Settings = {
@@ -31,7 +31,8 @@ let cache: Settings | null = null;
 function normalize(p: Partial<Settings>): Settings {
   return {
     adminPassword: p.adminPassword ?? "",
-    listenerPort: Number(p.listenerPort ?? 8443) || 8443,
+    listenerPort:
+      Number(p.listenerPort ?? process.env.EVERY_EAR_LISTENER_PORT ?? 8443) || 8443,
     livekitApiKey: p.livekitApiKey ?? "",
     livekitApiSecret: p.livekitApiSecret ?? "",
     languages: p.languages ?? DEFAULTS_LANGUAGES,
@@ -63,10 +64,13 @@ export function loadSettings(): Settings {
 export function saveSettings(next: Settings): Settings {
   cache = normalize(next);
   mkdirSync(dataDir(), { recursive: true });
-  writeFileSync(settingsPath(), JSON.stringify(cache, null, 2), {
+  const file = settingsPath();
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(cache, null, 2), {
     mode: 0o600,
     encoding: "utf8",
   });
+  renameSync(tmp, file);
   return cache;
 }
 

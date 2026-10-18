@@ -28,6 +28,12 @@ function signOut() {
   location.replace("/admin-login.html");
 }
 
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  toast("Something went wrong. Check the connection and try again.", "error");
+  e.preventDefault();
+});
+
 const $aiForm = document.getElementById("ai-form") as HTMLFormElement;
 const $aiKey = document.getElementById("ai-key") as HTMLInputElement;
 const $aiModel = document.getElementById("ai-model") as HTMLSelectElement;
@@ -96,8 +102,13 @@ $aiRefreshModels.addEventListener("click", () => void loadAiModels());
 
 $aiForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const model = $aiModel.value.trim();
+  if (!model) {
+    toast("Load the model list and pick a model first.", "error");
+    return;
+  }
   const payload: Record<string, unknown> = {
-    model: $aiModel.value,
+    model,
     temperature: Number($aiTemp.value),
   };
   if ($aiKey.value.trim()) payload.openRouterApiKey = $aiKey.value.trim();

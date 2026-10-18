@@ -1744,13 +1744,13 @@ button.is-loading.danger.outline::after {
 /* ============ QR code cards ============ */
 .qr-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-5);
 }
 
 @media (max-width: 600px) {
   .qr-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1764,6 +1764,9 @@ button.is-loading.danger.outline::after {
   align-items: center;
   gap: var(--space-3);
   text-align: center;
+  /* Grid items default to min-width:auto; without this a fixed-size QR canvas
+     can force the card (and the page) wider than the phone viewport. */
+  min-width: 0;
 }
 
 .qr-card h3 {
@@ -1776,13 +1779,17 @@ button.is-loading.danger.outline::after {
   border-radius: var(--radius-md);
   padding: var(--space-2);
   display: flex;
-  max-width: 100%;
+  justify-content: center;
+  width: 100%;
+  max-width: 208px;
+  box-sizing: border-box;
 }
 /* The QR canvas is rendered at a fixed pixel size; let it shrink to fit narrow
    screens instead of forcing the card (and page) wider than the viewport. */
 .qr-canvas-wrap canvas {
+  display: block;
   width: 100%;
-  max-width: 192px;
+  max-width: 100%;
   height: auto;
 }
 

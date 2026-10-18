@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # ---- paths -----------------------------------------------------------------
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 INSTALL_DIR="${INSTALL_DIR:-/opt/every-ear}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/every-ear}"
 DATA_DIR="${DATA_DIR:-/var/lib/every-ear}"
@@ -31,7 +31,7 @@ LISTENER_PORT="${LISTENER_PORT:-8443}"
 BACKEND_PORT="${BACKEND_PORT:-3000}"
 
 LIVEKIT_VERSION="${LIVEKIT_VERSION:-v1.11.0}"
-CADDY_VERSION="${CADDY_VERSION:-v2.8.4}"
+CADDY_VERSION="${CADDY_VERSION:-v2.11.7}"
 
 ENV_SRC="$REPO_DIR/.env"
 
@@ -41,6 +41,11 @@ die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Please run as root: sudo $0"
 [ -f "$REPO_DIR/livekit.yaml" ] || die "Run this from the repository checkout (livekit.yaml not found)."
+# The installer copies the built artifacts into INSTALL_DIR. If the checkout is
+# the same directory, it would delete its own build output mid-copy.
+if [ "$REPO_DIR" = "$(cd "$INSTALL_DIR" 2>/dev/null && pwd -P)" ]; then
+  die "The repository lives inside INSTALL_DIR ($INSTALL_DIR). Clone it elsewhere or set INSTALL_DIR to another path."
+fi
 
 # ---- prerequisites ---------------------------------------------------------
 command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node 20+ (e.g. NodeSource) first."

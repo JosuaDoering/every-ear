@@ -60,7 +60,35 @@ export function status(): SupervisorStatus {
   return STATE.status;
 }
 
-export async function start(env: SupervisorEnv): Promise<void> {
+// All lifecycle operations are serialised so the IP watcher and the
+// restart-flag watcher can never race `stop()`/`start()` against each other.
+let lifecycle: Promise<unknown> = Promise.resolve();
+
+function serialize<T>(task: () => Promise<T>): Promise<T> {
+  const run = lifecycle.then(task, task);
+  lifecycle = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+export function start(env: SupervisorEnv): Promise<void> {
+  return serialize(() => startInternal(env));
+}
+
+export function stop(): Promise<void> {
+  return serialize(() => stopInternal());
+}
+
+export function restart(env: SupervisorEnv): Promise<void> {
+  return serialize(async () => {
+    await stopInternal();
+    await startInternal(env);
+  });
+}
+
+async function startInternal(env: SupervisorEnv): Promise<void> {
   if (STATE.status !== "stopped") {
     throw new Error(`supervisor.start: already ${STATE.status}`);
   }
@@ -86,7 +114,7 @@ export async function start(env: SupervisorEnv): Promise<void> {
   events.emit("status", STATE.status);
 }
 
-export async function stop(): Promise<void> {
+async function stopInternal(): Promise<void> {
   if (STATE.status === "stopped") return;
   STATE.status = "stopping";
   events.emit("status", STATE.status);
@@ -107,11 +135,6 @@ export async function stop(): Promise<void> {
   STATE.logStreams = [];
   STATE.status = "stopped";
   events.emit("status", STATE.status);
-}
-
-export async function restart(env: SupervisorEnv): Promise<void> {
-  await stop();
-  await start(env);
 }
 
 function buildSpecs(env: SupervisorEnv): ProcSpec[] {
@@ -211,8 +234,23 @@ function spawnChild(spec: ProcSpec, env: SupervisorEnv): ChildProcess {
 
   child.on("exit", (code, signal) => {
     events.emit("exit", { name: spec.name, code, signal });
-    if (STATE.status !== "running") return; // expected exit during stop/restart
+    // A child may crash while we're still starting the stack (bad credentials,
+    // port already in use): that must be restarted too. Only an intentional
+    // stop suppresses it.
+    if (STATE.status === "stopping" || STATE.status === "stopped") return;
     scheduleRestart(spec, env);
+  });
+
+  // Flush and close this child's log stream once its stdio is drained. Without
+  // this every auto-restart would leak an open file descriptor.
+  child.on("close", () => {
+    try {
+      logStream.end();
+    } catch {
+      // ignore
+    }
+    const idx = STATE.logStreams.indexOf(logStream);
+    if (idx >= 0) STATE.logStreams.splice(idx, 1);
   });
 
   return child;
@@ -254,7 +292,7 @@ function scheduleRestart(spec: ProcSpec, env: SupervisorEnv): void {
 
   const timer = setTimeout(() => {
     STATE.restartTimers.delete(timer);
-    if (STATE.status !== "running") return;
+    if (STATE.status === "stopping" || STATE.status === "stopped") return;
     const idx = STATE.children.findIndex((c) => c.name === spec.name);
     if (idx < 0) return;
     const child = spawnChild(spec, env);

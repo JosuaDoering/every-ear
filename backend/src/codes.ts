@@ -22,6 +22,11 @@ const codesFile = () => path.join(config.dataDir, "codes.json");
 
 let cache: Map<string, Code> | null = null;
 
+/** Drop the in-memory cache (used by the admin data reset). */
+export function resetCodesCache(): void {
+  cache = null;
+}
+
 async function load(): Promise<Map<string, Code>> {
   if (cache) return cache;
   await fs.mkdir(config.dataDir, { recursive: true });

@@ -130,6 +130,9 @@
           <button type="button" class="secondary" id="cert-reset">
             <span>Reset to internal CA</span>
           </button>
+          <button type="button" class="secondary" id="cert-cancel" hidden>
+            <span>Cancel certificate attempt</span>
+          </button>
         </div>
 
         <div id="cert-challenge" class="cert-challenge" hidden>
@@ -226,7 +229,7 @@
             <strong>Reset event data</strong>
             <p class="hint">
               Deletes all events, codes, languages, statistics and images. Credentials
-              and settings are kept. Restarts the stack.
+              and settings are kept.
             </p>
           </div>
           <button type="button" class="danger" id="reset-data"><span>Reset data</span></button>

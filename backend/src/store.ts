@@ -7,7 +7,7 @@
 // a promise-chain mutex and writes atomically (temp file + rename) so a crash
 // mid-write can never leave a half-written file.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const mutexes = new Map<string, Promise<unknown>>();
@@ -33,6 +33,17 @@ export async function writeAtomic(file: string, data: string): Promise<void> {
   await fs.writeFile(tmp, data);
   // fs.rename is atomic on the same filesystem (POSIX and Windows NTFS).
   await fs.rename(tmp, file);
+}
+
+/**
+ * Synchronous variant for callers that cannot await (settings/caddy boot code).
+ * Same temp-file + rename guarantee.
+ */
+export function writeAtomicSync(file: string, data: string, mode?: number): void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, data, { mode, encoding: "utf8" });
+  renameSync(tmp, file);
 }
 
 /** Convenience: serialised + atomic JSON write. */

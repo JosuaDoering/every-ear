@@ -23,7 +23,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const LIVEKIT_VERSION = "v1.11.0";
-const CADDY_VERSION   = "v2.8.4";
+const CADDY_VERSION   = "v2.11.7";
 
 const execFileAsync = promisify(execFile);
 

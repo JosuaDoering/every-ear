@@ -44,8 +44,12 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 function authorized(header: string | undefined): boolean {
+  // Fail closed: if the configured password is missing/empty (e.g. a corrupt or
+  // legacy settings file), the admin API must never be accessible anonymously.
+  const expected = config.adminPassword;
+  if (!expected) return false;
   if (!header || !header.startsWith("Bearer ")) return false;
-  return constantTimeEqual(header.slice(7).trim(), config.adminPassword);
+  return constantTimeEqual(header.slice(7).trim(), expected);
 }
 
 export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {

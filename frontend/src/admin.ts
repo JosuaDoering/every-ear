@@ -88,6 +88,14 @@ function signOut() {
   location.replace("/admin-login.html");
 }
 
+// Network failures in event handlers should surface as a toast, not as an
+// unhandled rejection that leaves the page silently broken.
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  toast("Something went wrong. Check the connection and try again.", "error");
+  e.preventDefault();
+});
+
 // ---- Modal plumbing (new-event only) ---------------------------------------
 
 function openModalEl(el: HTMLDivElement) {
@@ -297,11 +305,13 @@ $eventForm.addEventListener("submit", async (e) => {
 
   $copyListener.addEventListener("click", () => {
     void navigator.clipboard.writeText(listenerUrl)
-      .then(() => toast("Listener URL copied.", "success"));
+      .then(() => toast("Listener URL copied.", "success"))
+      .catch(() => toast("Copy failed.", "error"));
   });
   $copyTranslator.addEventListener("click", () => {
     void navigator.clipboard.writeText(translatorUrl)
-      .then(() => toast("Translator URL copied.", "success"));
+      .then(() => toast("Translator URL copied.", "success"))
+      .catch(() => toast("Copy failed.", "error"));
   });
 })();
 

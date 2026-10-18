@@ -4,7 +4,7 @@
 import { fetchLanguages, type Language } from "./livekit.js";
 import { loadAdminToken, clearAdminToken } from "./session.js";
 import { toast, confirmDialog, setButtonLoading, inlineEdit } from "./ui.js";
-import { renderAdminNav, setAdminNavTitle } from "./admin-nav.js";
+import { renderAdminNav } from "./admin-nav.js";
 
 const token = loadAdminToken();
 if (!token) {
@@ -104,6 +104,12 @@ function signOut() {
   location.replace("/admin-login.html");
 }
 
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  toast("Something went wrong. Check the connection and try again.", "error");
+  e.preventDefault();
+});
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!),
@@ -198,7 +204,7 @@ function updateMeta() {
 function renderEvent() {
   if (!event) return;
   $detailName.textContent = event.name;
-  setAdminNavTitle(event.name);
+  document.title = `Every Ear · ${event.name}`;
   updateMeta();
 
   renderLangPicker($detailLanguages, new Set(event.languages));

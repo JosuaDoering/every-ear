@@ -5,10 +5,10 @@
 // desktop or headless). The launcher only has to start Caddy pointing at this
 // file; the backend rewrites and reloads it whenever settings change.
 
-import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import { getSettings } from "./settings.js";
+import { writeAtomicSync } from "./store.js";
 
 export const caddyfilePath = path.join(config.dataDir, "Caddyfile");
 
@@ -120,7 +120,7 @@ export function generateCaddyfile(): string {
 
 /** Write the Caddyfile to disk (used on cold start). */
 export function writeCaddyfile(): void {
-  writeFileSync(caddyfilePath, generateCaddyfile(), "utf8");
+  writeAtomicSync(caddyfilePath, generateCaddyfile());
 }
 
 /**
@@ -129,17 +129,23 @@ export function writeCaddyfile(): void {
  * on disk is used when the launcher starts Caddy).
  */
 export async function reloadCaddy(): Promise<boolean> {
-  if (!managesCaddy()) return false;
+  // In Vite dev mode Caddy is managed by hand; nothing to reload here.
+  if (!managesCaddy()) return true;
   const caddyfile = generateCaddyfile();
   try {
-    writeFileSync(caddyfilePath, caddyfile, "utf8");
+    writeAtomicSync(caddyfilePath, caddyfile);
   } catch (err) {
     console.error("[caddy] failed to write Caddyfile:", err);
   }
   try {
     const res = await fetch(`${CADDY_ADMIN}/load`, {
       method: "POST",
-      headers: { "Content-Type": "text/caddyfile" },
+      headers: {
+        "Content-Type": "text/caddyfile",
+        // Caddy >= 2.10 enforces the admin API origin check. Without this the
+        // request is rejected with 403 even on loopback.
+        Origin: CADDY_ADMIN,
+      },
       body: caddyfile,
     });
     if (!res.ok) {

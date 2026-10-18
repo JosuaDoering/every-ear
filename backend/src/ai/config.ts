@@ -26,6 +26,11 @@ const DEFAULTS: AiConfig = {
 const file = () => path.join(config.dataDir, "ai-config.json");
 let cache: AiConfig | null = null;
 
+/** Drop the in-memory cache (used by the admin data reset). */
+export function resetAiConfigCache(): void {
+  cache = null;
+}
+
 function envSeed(): Partial<AiConfig> {
   const seed: Partial<AiConfig> = {};
   if (process.env.OPENROUTER_API_KEY) seed.openRouterApiKey = process.env.OPENROUTER_API_KEY;

@@ -2,10 +2,10 @@
 // setup order and the rarer/destructive actions.
 
 import { toast, confirmDialog, setButtonLoading } from "./ui.js";
-import { loadAdminToken, clearAdminToken } from "./session.js";
+import { loadAdminToken, clearAdminToken, saveAdminToken } from "./session.js";
 import { renderAdminNav } from "./admin-nav.js";
 
-const token = loadAdminToken();
+let token = loadAdminToken() ?? "";
 if (!token) {
   location.replace("/admin-login.html");
   throw new Error("not authenticated");
@@ -27,6 +27,12 @@ function signOut() {
   clearAdminToken();
   location.replace("/admin-login.html");
 }
+
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  toast("Something went wrong. Check the connection and try again.", "error");
+  e.preventDefault();
+});
 
 // ---- Element refs ----------------------------------------------------------
 
@@ -54,6 +60,7 @@ const $domain = document.getElementById("domain") as HTMLInputElement;
 const $certNetcup = document.getElementById("cert-netcup") as HTMLButtonElement;
 const $certManual = document.getElementById("cert-manual") as HTMLButtonElement;
 const $certReset = document.getElementById("cert-reset") as HTMLButtonElement;
+const $certCancel = document.getElementById("cert-cancel") as HTMLButtonElement;
 const $certPem = document.getElementById("cert-pem") as HTMLTextAreaElement;
 const $keyPem = document.getElementById("key-pem") as HTMLTextAreaElement;
 const $certOwn = document.getElementById("cert-own") as HTMLButtonElement;
@@ -201,9 +208,24 @@ async function saveSettings(patch: Record<string, unknown>): Promise<boolean> {
     toast((body as { error?: string }).error ?? `Save failed (HTTP ${res.status})`, "error");
     return false;
   }
-  const out = (await res.json()) as { restartRequired?: boolean };
+  const out = (await res.json()) as { restartRequired?: boolean; caddyReloaded?: boolean };
   if (out.restartRequired) $restartBanner.hidden = false;
+  if (out.caddyReloaded === false) {
+    toast(
+      "Saved, but Caddy could not reload the new configuration. A restart may be required.",
+      "error",
+    );
+  }
   return true;
+}
+
+function warnIfCaddyFailed(ev: { caddyReloaded?: boolean }) {
+  if (ev.caddyReloaded === false) {
+    toast(
+      "Certificate saved, but Caddy could not reload the new configuration. A restart may be required.",
+      "error",
+    );
+  }
 }
 
 /** POST + read an SSE progress stream (certificate issuance / renewal). */
@@ -217,6 +239,7 @@ async function streamSse(
     done?: boolean;
     listenerUrl?: string;
     result?: string;
+    caddyReloaded?: boolean;
   }) => void,
 ): Promise<void> {
   const res = await authedFetch(url, {
@@ -231,6 +254,7 @@ async function streamSse(
       (body as { error?: string }).error ??
       "Another certificate operation is already running.";
     $certStatus.textContent = msg;
+    setCertRunning(true);
     toast(msg, "error");
     return;
   }
@@ -263,10 +287,16 @@ async function streamSse(
 // ---- Handlers --------------------------------------------------------------
 
 $copyLocal.addEventListener("click", () => {
-  void navigator.clipboard.writeText($localUrl.textContent ?? "").then(() => toast("Copied.", "success"));
+  void navigator.clipboard
+    .writeText($localUrl.textContent ?? "")
+    .then(() => toast("Copied.", "success"))
+    .catch(() => toast("Copy failed.", "error"));
 });
 $copyListener.addEventListener("click", () => {
-  void navigator.clipboard.writeText($listenerUrl.textContent ?? "").then(() => toast("Copied.", "success"));
+  void navigator.clipboard
+    .writeText($listenerUrl.textContent ?? "")
+    .then(() => toast("Copied.", "success"))
+    .catch(() => toast("Copy failed.", "error"));
 });
 
 $passwordForm.addEventListener("submit", async (e) => {
@@ -279,6 +309,9 @@ $passwordForm.addEventListener("submit", async (e) => {
   setButtonLoading($passwordSubmit, true);
   try {
     if (await saveSettings({ adminPassword: pw })) {
+      // Keep the current session working with the new password.
+      token = pw;
+      saveAdminToken(pw);
       toast("Password changed.", "success");
       $password.value = "";
     }
@@ -335,13 +368,36 @@ function showChallenge(name: string, value: string) {
 $certChallengeCopyName.addEventListener("click", () => {
   void navigator.clipboard
     .writeText($certChallengeName.textContent ?? "")
-    .then(() => toast("Record name copied.", "success"));
+    .then(() => toast("Record name copied.", "success"))
+    .catch(() => toast("Copy failed.", "error"));
 });
 
 $certChallengeCopyValue.addEventListener("click", () => {
   void navigator.clipboard
     .writeText($certChallengeValue.textContent ?? "")
-    .then(() => toast("Record value copied.", "success"));
+    .then(() => toast("Record value copied.", "success"))
+    .catch(() => toast("Copy failed.", "error"));
+});
+
+function setCertRunning(running: boolean) {
+  $certCancel.hidden = !running;
+}
+
+$certCancel.addEventListener("click", async () => {
+  $certCancel.disabled = true;
+  try {
+    const res = await authedFetch("/api/admin/certificate/cancel", { method: "POST" });
+    if (res.status === 401) return signOut();
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !(body as { ok?: boolean }).ok) {
+      $certStatus.textContent = "No certificate operation is running.";
+      return;
+    }
+    $certStatus.textContent = "Cancelling current attempt…";
+    toast("Cancellation requested.", "success");
+  } finally {
+    $certCancel.disabled = false;
+  }
 });
 
 $certNetcup.addEventListener("click", async () => {
@@ -352,6 +408,7 @@ $certNetcup.addEventListener("click", async () => {
   }
   setButtonLoading($certNetcup, true);
   resetChallenge();
+  setCertRunning(true);
   $certStatus.textContent = "Starting…";
   try {
     await streamSse("/api/admin/certificate/netcup", { domain }, (ev) => {
@@ -363,11 +420,13 @@ $certNetcup.addEventListener("click", async () => {
       } else if (ev.done) {
         $certStatus.textContent = `Certificate installed. ${ev.listenerUrl ?? ""}`;
         toast("Certificate installed.", "success");
+        warnIfCaddyFailed(ev);
         void loadPage();
       }
     });
   } finally {
     setButtonLoading($certNetcup, false);
+    setCertRunning(false);
   }
 });
 
@@ -379,6 +438,7 @@ $certManual.addEventListener("click", async () => {
   }
   setButtonLoading($certManual, true);
   resetChallenge();
+  setCertRunning(true);
   $certStatus.textContent = "Starting…";
   try {
     await streamSse("/api/admin/certificate/manual", { domain }, (ev) => {
@@ -393,18 +453,21 @@ $certManual.addEventListener("click", async () => {
       } else if (ev.done) {
         $certStatus.textContent = `Certificate installed. ${ev.listenerUrl ?? ""}`;
         toast("Certificate installed.", "success");
+        warnIfCaddyFailed(ev);
         resetChallenge();
         void loadPage();
       }
     });
   } finally {
     setButtonLoading($certManual, false);
+    setCertRunning(false);
   }
 });
 
 $certRenew.addEventListener("click", async () => {
   setButtonLoading($certRenew, true);
   resetChallenge();
+  setCertRunning(true);
   $certStatus.textContent = "Checking certificate…";
   try {
     await streamSse("/api/admin/certificate/renew", {}, (ev) => {
@@ -421,6 +484,7 @@ $certRenew.addEventListener("click", async () => {
     });
   } finally {
     setButtonLoading($certRenew, false);
+    setCertRunning(false);
   }
 });
 
@@ -442,7 +506,15 @@ $certOwn.addEventListener("click", async () => {
     toast(`Save failed (HTTP ${res.status})`, "error");
     return;
   }
-  toast("Certificate saved.", "success");
+  const body = (await res.json().catch(() => ({}))) as { caddyReloaded?: boolean };
+  if (body.caddyReloaded === false) {
+    toast(
+      "Certificate saved, but Caddy could not reload the new configuration. A restart may be required.",
+      "error",
+    );
+  } else {
+    toast("Certificate saved.", "success");
+  }
   $certPem.value = "";
   $keyPem.value = "";
   void loadPage();
@@ -461,7 +533,15 @@ $certReset.addEventListener("click", async () => {
     toast(`Reset failed (HTTP ${res.status})`, "error");
     return;
   }
-  toast("Reverted to internal certificate.", "success");
+  const body = (await res.json().catch(() => ({}))) as { caddyReloaded?: boolean };
+  if (body.caddyReloaded === false) {
+    toast(
+      "Reverted in settings, but Caddy could not reload. A restart may be required.",
+      "error",
+    );
+  } else {
+    toast("Reverted to internal certificate.", "success");
+  }
   $certStatus.textContent = "Using Caddy's internal certificate.";
   void loadPage();
 });
@@ -494,7 +574,7 @@ $resetData.addEventListener("click", async () => {
     toast(`Failed (HTTP ${res.status})`, "error");
     return;
   }
-  toast("Data reset. Restart required.", "success");
+  toast("Data reset.", "success");
   await refreshStatus();
 });
 

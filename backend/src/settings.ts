@@ -9,9 +9,10 @@
 // First boot seeds the file from environment variables, so the installer / the
 // desktop bootstrap only have to set env once.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeAtomicSync } from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..", "..");
@@ -83,10 +84,8 @@ export function getSettings(): Settings {
 export function saveSettings(next: Settings): Settings {
   cache = normalize(next);
   try {
-    writeFileSync(settingsFile, JSON.stringify(cache, null, 2), {
-      mode: 0o600,
-      encoding: "utf8",
-    });
+    // Atomic + creates dataDir: never leave a half-written settings file.
+    writeAtomicSync(settingsFile, JSON.stringify(cache, null, 2), 0o600);
   } catch (err) {
     console.error("[settings] failed to write settings.json:", err);
   }
@@ -121,7 +120,7 @@ export function writeLivekitEnv(): void {
       "",
     ].join("\n");
   try {
-    writeFileSync(path.join(dataDir, "livekit.env"), content, { mode: 0o600 });
+    writeAtomicSync(path.join(dataDir, "livekit.env"), content, 0o600);
   } catch (err) {
     console.error("[settings] failed to write livekit.env:", err);
   }

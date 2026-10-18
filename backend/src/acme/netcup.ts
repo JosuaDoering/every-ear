@@ -16,14 +16,39 @@ const BASE = "https://api.netcup.com/v1";
 const REQUEST_TIMEOUT_MS = 30_000;
 const timeoutSignal = (): AbortSignal => AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 
+/** Combine the per-request timeout with an optional caller abort signal. */
+function requestSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = timeoutSignal();
+  return signal ? AbortSignal.any([timeout, signal]) : timeout;
+}
+
+function abortError(): Error {
+  const err = new Error("certificate operation aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(abortError());
+      },
+      { once: true },
+    );
+  });
+}
+
 export type NetcupDomain = {
   id: number;
   fqdn: string;
   /** False if the zone's DNS is not managed via netcup CloudDNS. */
   isDnsManaged: boolean;
 };
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function headers(apiKey: string): Record<string, string> {
   return {
@@ -72,10 +97,14 @@ function findDomainObject(
  * Look up one exact FQDN. Returns null if it is not a domain of this account,
  * throws on authentication/transport errors.
  */
-async function getDomain(apiKey: string, fqdn: string): Promise<NetcupDomain | null> {
+async function getDomain(
+  apiKey: string,
+  fqdn: string,
+  signal?: AbortSignal,
+): Promise<NetcupDomain | null> {
   const res = await fetch(`${BASE}/domain?fqdn=${encodeURIComponent(fqdn)}`, {
     headers: headers(apiKey),
-    signal: timeoutSignal(),
+    signal: requestSignal(signal),
   });
   const text = await res.text().catch(() => "");
   if (!res.ok) throw new Error(errorText(res.status, text));
@@ -109,12 +138,16 @@ async function getDomain(apiKey: string, fqdn: string): Promise<NetcupDomain | n
  * For `_acme-challenge.events.example.com` the `_acme-challenge` label is
  * skipped, since it can never be a zone.
  */
-export async function resolveDomain(apiKey: string, name: string): Promise<NetcupDomain | null> {
+export async function resolveDomain(
+  apiKey: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<NetcupDomain | null> {
   const labels = name.split(".").filter(Boolean);
   const start = name.startsWith("_acme-challenge.") ? 1 : 0;
   for (let i = start; i < labels.length; i++) {
     const candidate = labels.slice(i).join(".");
-    const found = await getDomain(apiKey, candidate);
+    const found = await getDomain(apiKey, candidate, signal);
     if (found) return found;
   }
   return null;
@@ -150,6 +183,7 @@ export async function addChallenge(
   domain: NetcupDomain,
   scope: string,
   value: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!domain.isDnsManaged) {
     throw new Error(
@@ -161,7 +195,7 @@ export async function addChallenge(
     method: "POST",
     headers: headers(apiKey),
     body: JSON.stringify({ scope, value }),
-    signal: timeoutSignal(),
+    signal: requestSignal(signal),
   });
   const text = await res.text().catch(() => "");
   if (!res.ok) throw new Error(errorText(res.status, text));
@@ -180,17 +214,18 @@ export async function addChallenge(
 
   // Wait for the asynchronous deployment to the nameservers.
   for (let attempt = 0; attempt < 12; attempt++) {
-    await sleep(5_000);
+    await sleep(5_000, signal);
     try {
       const status = await fetch(challengeUrl(domain, scope, value), {
         headers: headers(apiKey),
-        signal: timeoutSignal(),
+        signal: requestSignal(signal),
       });
       if (!status.ok) continue;
       const body = await status.text();
       if (/"status"\s*:\s*"deployed"/.test(body)) return;
-    } catch {
-      // transient — keep polling
+    } catch (err) {
+      // Aborting must not be swallowed; transient errors keep polling.
+      if (signal?.aborted) throw err;
     }
   }
 }
@@ -201,11 +236,12 @@ export async function removeChallenge(
   domain: NetcupDomain,
   scope: string,
   value: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(challengeUrl(domain, scope, value), {
     method: "DELETE",
     headers: headers(apiKey),
-    signal: timeoutSignal(),
+    signal: requestSignal(signal),
   });
   if (res.status === 404) return;
   if (!res.ok) {

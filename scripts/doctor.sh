@@ -27,15 +27,19 @@ for u in every-ear-livekit every-ear-backend every-ear-caddy; do
 done
 
 echo "Ports (listening):"
-for spec in "${LISTENER_PORT}:tcp:listener HTTPS" "7880:tcp:LiveKit signaling" "7881:tcp:LiveKit TCP fallback" "7882:udp:LiveKit media"; do
-  port="${spec%%:*}"; rest="${spec#*:}"; proto="${rest%%:*}"; label="${rest#*:}"
-  if ss -lntu 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"; then
-    ok "$port/$proto ($label)"
-  else
-    # UDP sockets may not show the same way; be lenient for udp.
-    if [ "$proto" = "udp" ]; then warn "$port/$proto ($label) not seen — check firewall"; else bad "$port/$proto ($label) not listening"; fi
-  fi
-done
+if command -v ss >/dev/null 2>&1; then
+  for spec in "${LISTENER_PORT}:tcp:listener HTTPS" "7880:tcp:LiveKit signaling" "7881:tcp:LiveKit TCP fallback" "7882:udp:LiveKit media"; do
+    port="${spec%%:*}"; rest="${spec#*:}"; proto="${rest%%:*}"; label="${rest#*:}"
+    if ss -lntu 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"; then
+      ok "$port/$proto ($label)"
+    else
+      # UDP sockets may not show the same way; be lenient for udp.
+      if [ "$proto" = "udp" ]; then warn "$port/$proto ($label) not seen — check firewall"; else bad "$port/$proto ($label) not listening"; fi
+    fi
+  done
+else
+  warn "ss (iproute2) not found — skipping port checks (apt-get install -y iproute2)"
+fi
 
 echo "Backend health:"
 HEALTH="$(curl -fsS "http://127.0.0.1:${BACKEND_PORT}/api/health" 2>/dev/null || true)"

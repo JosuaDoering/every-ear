@@ -16,7 +16,25 @@ import * as netcup from "./netcup.js";
 // the ACME lock (see renewal.ts) occupied.
 acmeAxios.defaults.timeout = 30_000;
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+function abortError(): Error {
+  const err = new Error("certificate operation aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(abortError());
+      },
+      { once: true },
+    );
+  });
 
 function acmeCertsDir(): string {
   return path.join(config.dataDir, "acme-certs");
@@ -31,15 +49,17 @@ async function waitForDnsPropagation(
   fqdn: string,
   expectedValue: string,
   onProgress: (msg: string) => void,
-  opts: { intervalMs?: number; maxAttempts?: number } = {},
+  opts: { intervalMs?: number; maxAttempts?: number; signal?: AbortSignal } = {},
 ): Promise<void> {
   const intervalMs = opts.intervalMs ?? 60_000;
   const maxAttempts = opts.maxAttempts ?? 15;
+  const signal = opts.signal;
 
   const resolver = new dns.promises.Resolver();
   resolver.setServers(["1.1.1.1", "8.8.8.8"]);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) throw abortError();
     try {
       const records = await resolver.resolveTxt(fqdn);
       const found = records.some((chunks) => chunks.join("") === expectedValue);
@@ -58,7 +78,7 @@ async function waitForDnsPropagation(
             : "DNS error";
       onProgress(`Attempt ${attempt}/${maxAttempts}: ${reason}. Retrying…`);
     }
-    if (attempt < maxAttempts) await sleep(intervalMs);
+    if (attempt < maxAttempts) await sleep(intervalMs, signal);
   }
   throw new Error(
     "DNS record did not become visible in time. Double-check the TXT record at your DNS provider, then try again.",
@@ -137,6 +157,7 @@ export async function obtainCertificateViaNetcup(
   domain: string,
   apiKey: string,
   onProgress: (msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ certFile: string; keyFile: string }> {
   const challengeName = `_acme-challenge.${domain}`;
 
@@ -147,7 +168,7 @@ export async function obtainCertificateViaNetcup(
   const prepared = await startDns01Order(client, domain);
 
   onProgress("Looking up the DNS zone at netcup…");
-  const zone = await netcup.resolveDomain(apiKey, challengeName);
+  const zone = await netcup.resolveDomain(apiKey, challengeName, signal);
   if (!zone) {
     throw new Error(
       `No netcup DNS zone found for ${domain}. Check that the domain belongs to this API key's account.`,
@@ -157,10 +178,10 @@ export async function obtainCertificateViaNetcup(
 
   try {
     onProgress("Adding DNS TXT record…");
-    await netcup.addChallenge(apiKey, zone, scope, prepared.txtValue);
+    await netcup.addChallenge(apiKey, zone, scope, prepared.txtValue, signal);
 
     onProgress("Waiting for DNS propagation (checks every 60 s)…");
-    await waitForDnsPropagation(challengeName, prepared.txtValue, onProgress);
+    await waitForDnsPropagation(challengeName, prepared.txtValue, onProgress, { signal });
 
     const result = await completeAndInstall(client, prepared, domain, onProgress);
 
@@ -179,6 +200,7 @@ export async function obtainCertificateManual(
   domain: string,
   onProgress: (msg: string) => void,
   onChallenge: (challenge: ManualDnsChallenge) => void,
+  signal?: AbortSignal,
 ): Promise<{ certFile: string; keyFile: string }> {
   onProgress("Preparing ACME account…");
   const client = await createAcmeClient();
@@ -197,6 +219,7 @@ export async function obtainCertificateManual(
   await waitForDnsPropagation(challengeName, prepared.txtValue, onProgress, {
     intervalMs: 20_000,
     maxAttempts: 30,
+    signal,
   });
 
   const result = await completeAndInstall(client, prepared, domain, onProgress);

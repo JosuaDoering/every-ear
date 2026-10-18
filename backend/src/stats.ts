@@ -20,6 +20,7 @@ import {
   WebhookReceiver,
 } from "livekit-server-sdk";
 import { config } from "./config.js";
+import { writeAtomic } from "./store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // How often we rebuild the authoritative counts from LiveKit. The webhook path
@@ -56,6 +57,8 @@ let timer: NodeJS.Timeout | null = null;
 let persistTimer: NodeJS.Timeout | null = null;
 let dirty = false;
 let lastPersist = 0;
+let persisting = false;
+let reconciling = false;
 // Tracks whether the most recent LiveKit reconcile succeeded — exposed via
 // isLiveKitReachable() for the /api/health readiness probe.
 let lastPollOk = false;
@@ -121,24 +124,28 @@ async function load(): Promise<void> {
 }
 
 async function persist(): Promise<void> {
+  if (persisting) return;
+  persisting = true;
   try {
-    await fs.mkdir(config.dataDir, { recursive: true });
-    await fs.writeFile(statsFile(), JSON.stringify(model));
+    // Atomic write: a crash mid-write must not leave a torn stats.json.
+    await writeAtomic(statsFile(), JSON.stringify(model));
     lastPersist = Date.now();
+    dirty = false;
   } catch (err) {
     console.error("[stats] failed to write stats.json:", err);
+  } finally {
+    persisting = false;
   }
 }
 
 function persistIfDirty(): void {
-  if (dirty && Date.now() - lastPersist >= PERSIST_MIN_INTERVAL_MS) {
-    dirty = false;
+  if (dirty && !persisting && Date.now() - lastPersist >= PERSIST_MIN_INTERVAL_MS) {
     void persist();
   }
 }
 
 function pruneOld(now: number): void {
-  for (const rs of Object.values(model.rooms)) {
+  for (const [room, rs] of Object.entries(model.rooms)) {
     for (const [id, ts] of Object.entries(rs.listeners)) {
       if (now - ts > DAY_MS) {
         delete rs.listeners[id];
@@ -151,13 +158,31 @@ function pruneOld(now: number): void {
         dirty = true;
       }
     }
+    // Drop rooms that never carried data (auto-created rooms, test joins) so
+    // stats.json doesn't accumulate empty room entries forever.
+    if (
+      Object.keys(rs.listeners).length === 0 &&
+      Object.keys(rs.history).length === 0 &&
+      rs.broadcastSeconds === 0
+    ) {
+      delete model.rooms[room];
+      dirty = true;
+    }
   }
+}
+
+/** Clear all statistics (used by the admin "reset data" action). */
+export function resetStatsData(): void {
+  for (const room of Object.keys(model.rooms)) delete model.rooms[room];
+  activeListenerIdentities.clear();
+  dirty = false;
 }
 
 // Authoritative rebuild from the RoomService API. Cheap enough to run every
 // RECONCILE_MS and corrects any drift from missed webhook events.
 async function reconcile(): Promise<void> {
-  if (!client) return;
+  if (!client || reconciling) return;
+  reconciling = true;
   const now = Date.now();
   try {
     const rooms = await client.listRooms();
@@ -197,6 +222,8 @@ async function reconcile(): Promise<void> {
   } catch {
     // LiveKit may not be up yet, or briefly unreachable — try again next tick.
     lastPollOk = false;
+  } finally {
+    reconciling = false;
   }
 }
 

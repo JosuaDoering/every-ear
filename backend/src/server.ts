@@ -289,23 +289,53 @@ async function start() {
 
     reply.hijack();
     const raw = reply.raw;
+    let closed = false;
+    const abort = new AbortController();
+    raw.on("close", () => {
+      closed = true;
+      abort.abort();
+    });
+    raw.on("error", () => {
+      closed = true;
+      abort.abort();
+    });
     raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
-    const send = (event: object) => raw.write(`data: ${JSON.stringify(event)}\n\n`);
+    const send = (event: object) => {
+      if (closed || raw.destroyed || raw.writableEnded) return;
+      try {
+        raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      } catch {
+        closed = true;
+      }
+    };
 
     try {
-      const full = await translateStream(text, sourceName, targetName, context, (delta) => {
-        send({ delta });
-      });
+      const full = await translateStream(
+        text,
+        sourceName,
+        targetName,
+        context,
+        (delta) => {
+          send({ delta });
+        },
+        abort.signal,
+      );
       send({ done: true, text: full });
     } catch (err) {
       const e = err as TranslateError;
       send({ error: e?.message ?? "translation failed", status: e?.status ?? 500 });
     } finally {
-      raw.end();
+      if (!raw.writableEnded) {
+        try {
+          raw.end();
+        } catch {
+          // ignore
+        }
+      }
     }
   });
 

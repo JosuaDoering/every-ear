@@ -103,6 +103,7 @@ export type RenewResult = "renewed" | "skipped" | "failed";
  */
 export async function renewCertificateIfNeeded(
   onProgress: (msg: string) => void = (m) => console.log("[acme]", m),
+  signal?: AbortSignal,
 ): Promise<RenewResult> {
   try {
     return await withAcmeLock(async () => {
@@ -127,6 +128,7 @@ export async function renewCertificateIfNeeded(
         s.customDomain!,
         s.netcupApiKey!,
         onProgress,
+        signal,
       );
       updateSettings({ customCertFile: certFile, customKeyFile: keyFile });
       await reloadCaddy();

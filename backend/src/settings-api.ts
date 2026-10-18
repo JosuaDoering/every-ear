@@ -13,7 +13,11 @@ import { config } from "./config.js";
 import { getSettings, updateSettings, writeLivekitEnv, type Settings } from "./settings.js";
 import { reloadCaddy } from "./caddy.js";
 import { listCandidates } from "./network.js";
-import { isLiveKitReachable } from "./stats.js";
+import { isLiveKitReachable, resetStatsData } from "./stats.js";
+import { ensureDefaultEvent, resetEventsCache } from "./events.js";
+import { listCodes, resetCodesCache } from "./codes.js";
+import { listLanguages, resetLanguagesCache } from "./languages.js";
+import { resetAiConfigCache } from "./ai/config.js";
 import * as acme from "./acme/manager.js";
 import {
   withAcmeLock,
@@ -47,15 +51,55 @@ function adminUrl(s: Settings): string {
 function openSse(reply: FastifyReply): { send: (event: object) => void; end: () => void } {
   reply.hijack();
   const raw = reply.raw;
+  let closed = false;
+  raw.on("close", () => {
+    closed = true;
+  });
+  // Without a listener a write after the client disconnects can surface as an
+  // unhandled 'error' event.
+  raw.on("error", () => {
+    closed = true;
+  });
   raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
   return {
-    send: (event) => raw.write(`data: ${JSON.stringify(event)}\n\n`),
-    end: () => raw.end(),
+    send: (event) => {
+      if (closed || raw.destroyed || raw.writableEnded) return;
+      try {
+        raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      } catch {
+        closed = true;
+      }
+    },
+    end: () => {
+      if (closed || raw.writableEnded) return;
+      try {
+        raw.end();
+      } catch {
+        // ignore
+      }
+    },
   };
+}
+
+/** The currently running certificate operation, for explicit cancellation. */
+let activeAcmeAbort: AbortController | null = null;
+
+function beginAcmeOperation(reply: FastifyReply): AbortController {
+  const ac = new AbortController();
+  activeAcmeAbort = ac;
+  // If the admin closes the tab / the connection drops, abort the operation so
+  // the ACME lock is released and the next attempt can start immediately.
+  reply.raw.on("close", () => ac.abort());
+  reply.raw.on("error", () => ac.abort());
+  return ac;
+}
+
+function endAcmeOperation(ac: AbortController): void {
+  if (activeAcmeAbort === ac) activeAcmeAbort = null;
 }
 
 export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
@@ -128,10 +172,10 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
 
     updateSettings(patch);
     // Host/port/cert changes apply live via Caddy.
-    await reloadCaddy();
+    const caddyReloaded = await reloadCaddy();
     if (restart) await requestRestart();
 
-    return { ok: true, restartRequired: restart };
+    return { ok: true, restartRequired: restart, caddyReloaded };
   });
 
   // ---- Certificates --------------------------------------------------------
@@ -149,9 +193,15 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       const { send, end } = openSse(reply);
       if (!domain) return (send({ error: "domain required" }), end());
       if (!apiKey) return (send({ error: "netcup API key required" }), end());
+      const ac = beginAcmeOperation(reply);
       try {
         const { certFile, keyFile } = await withAcmeLock(() =>
-          acme.obtainCertificateViaNetcup(domain, apiKey, (msg) => send({ progress: msg })),
+          acme.obtainCertificateViaNetcup(
+            domain,
+            apiKey,
+            (msg) => send({ progress: msg }),
+            ac.signal,
+          ),
         );
         updateSettings({
           customDomain: domain,
@@ -159,11 +209,12 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
           customKeyFile: keyFile,
           netcupApiKey: apiKey,
         });
-        await reloadCaddy();
-        send({ done: true, listenerUrl: listenerUrl(getSettings()) });
+        const caddyReloaded = await reloadCaddy();
+        send({ done: true, listenerUrl: listenerUrl(getSettings()), caddyReloaded });
       } catch (err) {
         send({ error: err instanceof Error ? err.message : "certificate issuance failed" });
       } finally {
+        endAcmeOperation(ac);
         end();
       }
     },
@@ -178,20 +229,23 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
     }
     const { send, end } = openSse(reply);
     if (!domain) return (send({ error: "domain required" }), end());
+    const ac = beginAcmeOperation(reply);
     try {
       const { certFile, keyFile } = await withAcmeLock(() =>
         acme.obtainCertificateManual(
           domain,
           (msg) => send({ progress: msg }),
           (challenge) => send({ challenge }),
+          ac.signal,
         ),
       );
       updateSettings({ customDomain: domain, customCertFile: certFile, customKeyFile: keyFile });
-      await reloadCaddy();
-      send({ done: true, listenerUrl: listenerUrl(getSettings()) });
+      const caddyReloaded = await reloadCaddy();
+      send({ done: true, listenerUrl: listenerUrl(getSettings()), caddyReloaded });
     } catch (err) {
       send({ error: err instanceof Error ? err.message : "certificate issuance failed" });
     } finally {
+      endAcmeOperation(ac);
       end();
     }
   });
@@ -202,14 +256,25 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
       return reply.code(409).send({ error: "certificate operation already in progress" });
     }
     const { send, end } = openSse(reply);
+    const ac = beginAcmeOperation(reply);
     try {
-      const result = await renewCertificateIfNeeded((msg) => send({ progress: msg }));
+      const result = await renewCertificateIfNeeded((msg) => send({ progress: msg }), ac.signal);
       send({ done: true, result, listenerUrl: listenerUrl(getSettings()) });
     } catch (err) {
       send({ error: err instanceof Error ? err.message : "renewal failed" });
     } finally {
+      endAcmeOperation(ac);
       end();
     }
+  });
+
+  // Abort a running certificate operation (e.g. a stale attempt that would
+  // otherwise keep the ACME lock busy).
+  app.post("/certificate/cancel", async () => {
+    const ac = activeAcmeAbort;
+    if (!ac) return { ok: false, message: "no certificate operation running" };
+    ac.abort();
+    return { ok: true };
   });
 
   // Upload an own PEM certificate + key.
@@ -231,16 +296,16 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
         customCertFile: certFile,
         customKeyFile: keyFile,
       });
-      const ok = await reloadCaddy();
-      return { ok, listenerUrl: listenerUrl(getSettings()) };
+      const caddyReloaded = await reloadCaddy();
+      return { ok: caddyReloaded, caddyReloaded, listenerUrl: listenerUrl(getSettings()) };
     },
   );
 
   // Revert to Caddy's internal CA.
   app.post("/certificate/reset", async () => {
     updateSettings({ customDomain: null, customCertFile: null, customKeyFile: null });
-    await reloadCaddy();
-    return { ok: true, listenerUrl: listenerUrl(getSettings()) };
+    const caddyReloaded = await reloadCaddy();
+    return { ok: true, listenerUrl: listenerUrl(getSettings()), caddyReloaded };
   });
 
   // ---- Credentials + reset -------------------------------------------------
@@ -255,7 +320,8 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
   });
 
   // Wipe event data (events, codes, stats, AI config, backgrounds). Keeps
-  // credentials and settings. Requires a restart so in-memory caches reset.
+  // credentials and settings. In-memory caches are reset and the defaults are
+  // re-seeded, so no process restart is needed.
   app.post("/reset", async () => {
     const files = ["events.json", "codes.json", "languages.json", "stats.json", "ai-config.json"];
     for (const f of files) {
@@ -267,8 +333,19 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
         await fs.rm(path.join(config.dataDir, f), { force: true });
       }
     }
-    await requestRestart();
-    return { ok: true, restartRequired: true };
+
+    resetEventsCache();
+    resetCodesCache();
+    resetLanguagesCache();
+    resetAiConfigCache();
+    resetStatsData();
+
+    // Re-seed the defaults so the admin UI stays usable immediately.
+    await listLanguages();
+    await ensureDefaultEvent();
+    await listCodes();
+
+    return { ok: true, restartRequired: false };
   });
 
   app.get("/status", async () => {
