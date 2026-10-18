@@ -1,6 +1,7 @@
-# PR validation: package the desktop app for macOS (arm64) and Windows (x64)
-# so we know a release would build. Artifacts are attached to the run; nothing
-# is published. Releases happen on a version tag — see release.yml.
+# PR validation: package the desktop app for macOS (arm64), Windows (x64) and
+# Linux (x64 + arm64) so we know a release would build. Artifacts are attached
+# to the run; nothing is published. Releases happen on a version tag — see
+# release.yml.
 name: Build desktop
 
 on:
@@ -40,7 +41,9 @@ jobs:
             desktop/package-lock.json
 
       # macOS has no prebuilt LiveKit binary — fetch-binaries compiles it from
-      # source with Go (CGO disabled, so no C toolchain needed).
+      # source with Go. That build needs cgo (LiveKit's CPU stats use a cgo-only
+      # backend on darwin), so the compiler ships with the Xcode toolchain that
+      # is already on the macOS runner.
       - uses: actions/setup-go@v5
         if: matrix.platform == 'mac'
         with:
