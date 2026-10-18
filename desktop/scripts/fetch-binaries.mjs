@@ -12,8 +12,8 @@
 // Linux + Windows: download the official release asset.
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, renameSync } from "node:fs";
-import { copyFile, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { existsSync, mkdirSync } from "node:fs";
+import { copyFile, cp, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -33,20 +33,24 @@ const desktopRoot = path.resolve(here, "..");
 const platform = process.platform;            // 'darwin' | 'win32' | 'linux'
 const platformDir = ({ darwin: "mac", win32: "win", linux: "linux" })[platform] ?? platform;
 
-// Which arches should we populate?
+// Which arches should we populate? Every arch listed here must also be an
+// arch electron-builder packages, otherwise the AppImage ships without
+// livekit-server/Caddy (electron-builder only warns: "file source doesn't
+// exist") and fails at runtime.
 //
 // macOS:    arm64 only by default. x64 needs CGO cross-compile (LiveKit's
 //           cpu-stats package depends on CGO), which means installing a
 //           C cross-toolchain. Most current Macs are Apple Silicon — opt
 //           into x64 explicitly with `EVERY_EAR_MAC_ARCHS=arm64,x64`.
 // Windows:  x64 only (default Windows 11 install).
-// Linux:    x64 only.
+// Linux:    x64 + arm64 (electron-builder builds an arm64 AppImage).
 const targetArchs = (() => {
   if (platform === "darwin") {
     const fromEnv = process.env.EVERY_EAR_MAC_ARCHS;
     if (fromEnv) return fromEnv.split(",").map((s) => s.trim()).filter(Boolean);
     return ["arm64"];
   }
+  if (platform === "linux") return ["x64", "arm64"];
   return ["x64"];
 })();
 
@@ -93,7 +97,7 @@ async function ensureLiveKit(arch, targetDir) {
 
   const inner = await findInTree(tmp.dir, exe);
   if (!inner) throw new Error(`Could not find ${exe} in ${tmp.dir}`);
-  renameSync(inner, dst);
+  await moveFile(inner, dst);
   await tmp.cleanup();
   if (platform !== "win32") await execFileAsync("chmod", ["+x", dst]);
 }
@@ -109,13 +113,23 @@ async function ensureLiveKitMac(arch, dst) {
       await copyExecutable(cellarBin, dst);
       return;
     }
-    // 2) Any Homebrew install on this Mac.
+    // 2) Any Homebrew install on this Mac — but only the pinned version, so a
+    //    stale `brew install livekit` doesn't ship a different server build
+    //    than Linux/Windows download.
     for (const candidate of [
       "/opt/homebrew/bin/livekit-server",
       "/usr/local/bin/livekit-server",
     ]) {
       if (await isFile(candidate)) {
         const real = await realPath(candidate);
+        const reported = await readLiveKitVersion(real);
+        if (reported !== LIVEKIT_VERSION.replace(/^v/, "")) {
+          console.log(
+            `  livekit-server ← skipping ${real} (version ${reported ?? "unknown"}, ` +
+            `need ${LIVEKIT_VERSION}); building from source instead`,
+          );
+          continue;
+        }
         console.log(`  livekit-server ← ${real} (Homebrew)`);
         await copyExecutable(real, dst);
         return;
@@ -151,18 +165,23 @@ async function buildLiveKitFromSource(arch, dst) {
       throw new Error(`Expected source tree at ${extracted}`);
     }
     mkdirSync(path.dirname(cachedSrcDir), { recursive: true });
-    renameSync(extracted, cachedSrcDir);
+    await moveFile(extracted, cachedSrcDir);
     await tmp.cleanup();
   }
 
   const goarch = arch === "arm64" ? "arm64" : "amd64";
+  // LiveKit links github.com/mackerelio/go-osstat's cgo CPU counters on darwin;
+  // with CGO_ENABLED=0 that package builds to an empty stub and
+  // livekit/protocol@v1.45.3 fails to compile ("undefined: cpu.Stats").
+  // cgo needs clang from the Xcode command line tools. Cross-arch is fine:
+  // Go passes `-arch` to clang, so one SDK builds both slices.
   console.log(`  livekit-server ← go build GOOS=darwin GOARCH=${goarch}…`);
   await execFileAsync(
     "go",
     ["build", "-trimpath", "-ldflags=-s -w", "-o", dst, "./cmd/server"],
     {
       cwd: cachedSrcDir,
-      env: { ...process.env, GOOS: "darwin", GOARCH: goarch, CGO_ENABLED: "0" },
+      env: { ...process.env, GOOS: "darwin", GOARCH: goarch, CGO_ENABLED: "1" },
     },
   );
   await execFileAsync("chmod", ["+x", dst]);
@@ -195,12 +214,27 @@ async function ensureCaddy(arch, targetDir) {
 
   const inner = await findInTree(tmp.dir, exe);
   if (!inner) throw new Error(`Could not find ${exe} in ${tmp.dir}`);
-  renameSync(inner, dst);
+  await moveFile(inner, dst);
   await tmp.cleanup();
   if (platform !== "win32") await execFileAsync("chmod", ["+x", dst]);
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/**
+ * Move a file or directory into place. `rename` fails with EXDEV when the temp
+ * dir and the checkout live on different filesystems (Windows runners: %TEMP%
+ * on C:, the workspace on D:), so fall back to copy + remove.
+ */
+async function moveFile(src, dst) {
+  try {
+    await rename(src, dst);
+  } catch (err) {
+    if (err.code !== "EXDEV") throw err;
+    await cp(src, dst, { recursive: true });
+    await rm(src, { recursive: true, force: true });
+  }
+}
 
 function exeName(name) {
   return platform === "win32" ? `${name}.exe` : name;
@@ -280,6 +314,16 @@ async function realPath(p) {
 async function copyExecutable(src, dst) {
   await copyFile(src, dst);
   if (platform !== "win32") await execFileAsync("chmod", ["+x", dst]);
+}
+
+/** Parse `livekit-server --version` → "1.11.0" (null if it can't be read). */
+async function readLiveKitVersion(bin) {
+  try {
+    const { stdout } = await execFileAsync(bin, ["--version"]);
+    return /\b(\d+\.\d+\.\d+)\b/.exec(stdout)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function hasCommand(cmd) {

@@ -46,10 +46,10 @@ extraResources:
 mac:
   category: public.app-category.utilities
   icon: resources/icon.icns
-  # arm64 only by default. To also produce an x64 DMG, install an x64
-  # C cross-toolchain (LiveKit needs CGO to cross-compile), set
-  # EVERY_EAR_MAC_ARCHS=arm64,x64 before running fetch-binaries, then
-  # add `- x64` to the arch list below.
+  # arm64 only by default. To also produce an x64 DMG, set
+  # EVERY_EAR_MAC_ARCHS=arm64,x64 before running fetch-binaries and add
+  # `- x64` to the arch list below. Both slices build with the host Xcode
+  # toolchain, because Go passes `-arch` to clang for cgo.
   target:
     - target: dmg
       arch:

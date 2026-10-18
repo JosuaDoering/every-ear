@@ -2,7 +2,12 @@
   "name": "every-ear-desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "Every Ear desktop wrapper (Electron) for macOS and Windows.",
+  "description": "Every Ear desktop wrapper (Electron) for macOS, Windows and Linux.",
+  "author": {
+    "name": "Josua Doering",
+    "email": "31008246+JosuaDoering@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/JosuaDoering/every-ear",
   "main": "build/main.js",
   "scripts": {
     "build:tsc": "tsc -p tsconfig.json",

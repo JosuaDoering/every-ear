@@ -8,5 +8,6 @@ dist
 desktop/build
 desktop/dist
 desktop/resources/bin
+desktop/.cache
 backend/dist
 backend/data
