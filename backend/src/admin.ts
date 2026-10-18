@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { promises as fs } from "node:fs";
+import { createHash, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { config } from "./config.js";
 import {
@@ -9,16 +10,16 @@ import {
   revokeCodesForEvent,
 } from "./codes.js";
 import {
-  ALLOWED_BG_EXT,
   BACKGROUND_OUTPUT_EXT,
   clearEventBackground,
   clearGlobalBackground,
-  compressBackgroundImage,
+  readBackgroundUpload,
 } from "./background.js";
 import {
   createEvent,
   deleteEvent,
   ensureDefaultEvent,
+  EVENT_NAME_MAX,
   getEvent,
   listEvents,
   stripLanguageFromEvents,
@@ -37,10 +38,11 @@ import { statsForRoom } from "./stats.js";
 import { settingsApiPlugin } from "./settings-api.js";
 
 function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  // Hash first: comparing the raw strings would return early on a length
+  // mismatch, which leaks the password length to a timing attacker.
+  const left = createHash("sha256").update(a).digest();
+  const right = createHash("sha256").update(b).digest();
+  return timingSafeEqual(left, right);
 }
 
 function authorized(header: string | undefined): boolean {
@@ -67,6 +69,9 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     if (!authorized(req.headers.authorization)) {
       return reply.code(401).send({ error: "unauthorized" });
     }
+    // Admin responses contain credentials (LiveKit key, masked API key, URLs) and
+    // must never land in a shared browser cache or a proxy on the LAN.
+    reply.header("Cache-Control", "no-store");
   });
 
   // Used by the admin login form to verify the password.
@@ -223,8 +228,18 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     const name = req.body?.name?.trim();
     const languages = Array.isArray(req.body?.languages) ? req.body!.languages : [];
     const aiLanguages = Array.isArray(req.body?.aiLanguages) ? req.body!.aiLanguages : [];
-    const aiSourceLang = req.body?.aiSourceLang?.toLowerCase();
+    const aiSourceLang = req.body?.aiSourceLang?.trim().toLowerCase();
     if (!name) return reply.code(400).send({ error: "name required" });
+    // Reject instead of truncating: the admin would otherwise create "Sunday
+    // Service – Main Hall Edition 2026" and silently get a cut-off title.
+    if (name.length > EVENT_NAME_MAX) {
+      return reply.code(400).send({
+        error: `name too long (max ${EVENT_NAME_MAX} characters)`,
+      });
+    }
+    if (aiSourceLang && !(await validLanguage(aiSourceLang))) {
+      return reply.code(400).send({ error: `unknown aiSourceLang: ${aiSourceLang}` });
+    }
     const overlap = languages.filter((l) => aiLanguages.includes(l));
     if (overlap.length > 0) {
       return reply.code(400).send({
@@ -255,11 +270,25 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       aiSourceLang?: string | null;
       active?: boolean;
     } = {};
-    if (typeof req.body?.name === "string") patch.name = req.body.name.trim();
+    if (typeof req.body?.name === "string") {
+      const name = req.body.name.trim();
+      // A cleared name leaves a blank row in the admin list and an unnamed
+      // event in the listener picker; the create path already requires one.
+      if (!name) return reply.code(400).send({ error: "name required" });
+      if (name.length > EVENT_NAME_MAX) {
+        return reply.code(400).send({
+          error: `name too long (max ${EVENT_NAME_MAX} characters)`,
+        });
+      }
+      patch.name = name;
+    }
     if (Array.isArray(req.body?.languages)) patch.languages = req.body.languages;
     if (Array.isArray(req.body?.aiLanguages)) patch.aiLanguages = req.body.aiLanguages;
     if (typeof req.body?.aiSourceLang === "string" || req.body?.aiSourceLang === null) {
-      patch.aiSourceLang = req.body.aiSourceLang;
+      patch.aiSourceLang = req.body.aiSourceLang?.trim().toLowerCase() ?? null;
+      if (patch.aiSourceLang && !(await validLanguage(patch.aiSourceLang))) {
+        return reply.code(400).send({ error: `unknown aiSourceLang: ${patch.aiSourceLang}` });
+      }
     }
     if (typeof req.body?.active === "boolean") patch.active = req.body.active;
 
@@ -294,25 +323,14 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       if (!event) return reply.code(404).send({ error: "event not found" });
       const data = await req.file();
       if (!data) return reply.code(400).send({ error: "no file" });
-      if (!data.mimetype.startsWith("image/")) {
-        return reply.code(400).send({ error: "must be an image" });
-      }
-      const inputExt = data.mimetype.split("/")[1]?.toLowerCase() ?? "";
-      if (!ALLOWED_BG_EXT.has(inputExt)) {
-        return reply.code(400).send({ error: `unsupported type: ${data.mimetype}` });
-      }
-      let buffer: Buffer;
-      try {
-        buffer = await compressBackgroundImage(await data.toBuffer());
-      } catch {
-        return reply.code(400).send({ error: "could not process image" });
-      }
+      const upload = await readBackgroundUpload(data);
+      if ("error" in upload) return reply.code(upload.status).send({ error: upload.error });
       const ext = BACKGROUND_OUTPUT_EXT;
       await fs.mkdir(config.dataDir, { recursive: true });
       await clearEventBackground(event.id);
       await fs.writeFile(
         path.join(config.dataDir, `event-${event.id}.${ext}`),
-        buffer,
+        upload.buffer,
       );
       await updateEvent(event.id, { backgroundExt: ext });
       return { ok: true, ext };
@@ -381,23 +399,12 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.post("/background", async (req, reply) => {
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: "no file" });
-    if (!data.mimetype.startsWith("image/")) {
-      return reply.code(400).send({ error: "must be an image" });
-    }
-    const inputExt = data.mimetype.split("/")[1]?.toLowerCase() ?? "";
-    if (!ALLOWED_BG_EXT.has(inputExt)) {
-      return reply.code(400).send({ error: `unsupported type: ${data.mimetype}` });
-    }
-    let buffer: Buffer;
-    try {
-      buffer = await compressBackgroundImage(await data.toBuffer());
-    } catch {
-      return reply.code(400).send({ error: "could not process image" });
-    }
+    const upload = await readBackgroundUpload(data);
+    if ("error" in upload) return reply.code(upload.status).send({ error: upload.error });
     const ext = BACKGROUND_OUTPUT_EXT;
     await fs.mkdir(config.dataDir, { recursive: true });
     await clearGlobalBackground();
-    await fs.writeFile(path.join(config.dataDir, `background.${ext}`), buffer);
+    await fs.writeFile(path.join(config.dataDir, `background.${ext}`), upload.buffer);
     return { ok: true, ext };
   });
 

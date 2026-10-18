@@ -7,7 +7,13 @@ import path from "node:path";
 import { config } from "./config.js";
 import { ensureSettingsFile, getSettings, writeLivekitEnv } from "./settings.js";
 import { writeCaddyfile, reloadCaddy } from "./caddy.js";
-import { listenerToken, translatorToken, aiPublisherToken } from "./tokens.js";
+import {
+  listenerToken,
+  translatorToken,
+  aiPublisherToken,
+  verifyPublisherToken,
+  type VerifiedPublisher,
+} from "./tokens.js";
 import { getCode, listCodes, markUsed } from "./codes.js";
 import { getEvent, listActiveEvents, listEvents } from "./events.js";
 import {
@@ -16,6 +22,7 @@ import {
   validLanguage,
 } from "./languages.js";
 import { adminPlugin } from "./admin.js";
+import { applySecurityHeaders } from "./security-headers.js";
 import { registerBackgroundRoutes } from "./background.js";
 import {
   startStatsCollector,
@@ -32,6 +39,18 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
 
+/**
+ * Addresses allowed to set X-Forwarded-For. Only the local reverse proxy may,
+ * otherwise any client could pick its own `req.ip` and sidestep the per-IP
+ * rate limits (notably the 6-digit translator-code brute-force cap).
+ */
+function trustProxySetting(): true | string[] {
+  const raw = process.env.TRUST_PROXY?.trim();
+  if (raw === "true") return true;
+  if (raw) return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return ["127.0.0.1", "::1"];
+}
+
 async function start() {
   // trustProxy so req.ip reflects the real client behind the Caddy reverse
   // proxy (via X-Forwarded-For) rather than 127.0.0.1. Timeouts bound resource
@@ -39,13 +58,20 @@ async function start() {
   // open indefinitely, which matters under load on event WiFi.
   const app = Fastify({
     logger: true,
-    trustProxy: true,
+    trustProxy: trustProxySetting(),
     bodyLimit: 2 * 1024 * 1024,
     // Drop idle keep-alive sockets after 30s and force a connection-level
     // timeout so slow/stuck clients free up server resources.
     keepAliveTimeout: 30_000,
     connectionTimeout: 60_000,
     requestTimeout: 90_000,
+  });
+
+  // Same policy Caddy adds for the production static server, so the loopback
+  // fallback UI (backend serves dist/ itself) is hardened too.
+  app.addHook("onSend", async (_req, reply, payload) => {
+    applySecurityHeaders(reply);
+    return payload;
   });
 
   await app.register(multipart, {
@@ -178,7 +204,11 @@ async function start() {
         return reply.code(400).send({ error: "unknown language" });
       }
       const event = await getEvent(eventId);
-      if (!event) return reply.code(404).send({ error: "event not found" });
+      // Deactivated events must not hand out tokens either: guests who already
+      // have the link would otherwise keep listening after the admin stops it.
+      if (!event || event.active === false) {
+        return reply.code(404).send({ error: "event not found" });
+      }
       const eventLangs = [...event.languages, ...(event.aiLanguages ?? [])];
       if (!eventLangs.includes(language)) {
         return reply.code(400).send({ error: "language not in event" });
@@ -202,6 +232,12 @@ async function start() {
       if (!entry) return reply.code(404).send({ error: "code not found" });
       const event = await getEvent(entry.eventId);
       if (!event) return reply.code(410).send({ error: "event no longer exists" });
+      // A deactivated event must not hand out new publisher tokens: existing
+      // sessions end with the 6h TTL, and new logins get a clear 410 instead of
+      // a token for a room nobody is serving.
+      if (event.active === false) {
+        return reply.code(410).send({ error: "event is not active" });
+      }
       const aiCfg = await loadAiConfig();
 
       if (entry.role === "ai-operator") {
@@ -237,6 +273,12 @@ async function start() {
         };
       }
 
+      // The event may still exist while this language was removed from it (or
+      // moved to the AI languages). Its code would otherwise keep minting a
+      // publisher token for a room no listener page offers.
+      if (!event.languages.includes(entry.language)) {
+        return reply.code(410).send({ error: "language no longer offered by this event" });
+      }
       const lang = await getLanguage(entry.language);
       if (!lang) {
         return reply.code(410).send({ error: "language no longer configured" });
@@ -263,6 +305,7 @@ async function start() {
 
   app.post<{
     Body: { text?: string; sourceLang?: string; targetLang?: string; context?: string[] };
+    Headers: { authorization?: string };
   }>("/api/ai/translate",
     // The shared concurrency limiter / circuit breaker in translate.ts is the
     // real guard against OpenRouter overload; this per-IP cap just stops a
@@ -277,9 +320,40 @@ async function start() {
       ? req.body!.context.filter((c): c is string => typeof c === "string").slice(-3)
       : [];
     if (!text) return reply.code(400).send({ error: "text required" });
+    // A translation is billed per token against the server's key, and the
+    // chunker never sends more than one sentence: cap the input so a valid
+    // token cannot be used to push whole documents through the paid API.
+    if (text.length > 1000) {
+      return reply.code(413).send({ error: "text too long (max 1000 characters)" });
+    }
     if (!sourceLang || !targetLang) {
       return reply.code(400).send({ error: "sourceLang and targetLang required" });
     }
+
+    // Every translation is paid for with the server's OpenRouter key, so only
+    // translators/AI operators of this event may spend it.
+    const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
+    if (!bearer) return reply.code(401).send({ error: "authorization required" });
+    let grant: VerifiedPublisher;
+    try {
+      grant = await verifyPublisherToken(bearer);
+    } catch {
+      return reply.code(401).send({ error: "invalid token" });
+    }
+    const event = await getEvent(grant.eventId);
+    if (!event || event.active === false) {
+      return reply.code(403).send({ error: "event not available" });
+    }
+    // Only AI-enabled events may translate, and only into their AI languages,
+    // and only into the language the presented token was issued for.
+    const aiLangs = (event.aiLanguages ?? []).map((l) => l.toLowerCase());
+    if (!aiLangs.includes(targetLang)) {
+      return reply.code(403).send({ error: "target language not enabled for AI" });
+    }
+    if (grant.language.toLowerCase() !== targetLang) {
+      return reply.code(403).send({ error: "token not valid for target language" });
+    }
+
     const [src, tgt] = await Promise.all([
       getLanguage(sourceLang),
       getLanguage(targetLang),
@@ -352,9 +426,19 @@ async function start() {
       index: ["index.html"],
     });
     app.setNotFoundHandler((req, reply) => {
-      if (req.method === "GET" && !req.url.startsWith("/api/")) {
-        return reply.type("text/html").sendFile("index.html");
-      }
+      // Only extension-less paths are client-side routes. Returning index.html
+      // for a missing /assets/*.js or image would hand the browser a 200 with
+      // the wrong MIME type, so a stale bundle fails confusingly instead of
+      // surfacing a plain 404.
+      const pathname = (req.url.split("?")[0] ?? "").replace(/\/+$/, "");
+      // Every /api route is JSON. A bare "/api" or an unknown "/api/foo" must
+      // therefore 404 as JSON too, not answer with the SPA shell.
+      const isApi = pathname === "/api" || pathname.startsWith("/api/");
+      const isPage =
+        req.method === "GET" &&
+        !isApi &&
+        !/\.[a-z0-9]{1,8}$/i.test(pathname);
+      if (isPage) return reply.type("text/html").sendFile("index.html");
       return reply.code(404).send({ error: "not found" });
     });
   }

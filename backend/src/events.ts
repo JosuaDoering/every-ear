@@ -2,11 +2,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
-import { persistJsonAtomic } from "./store.js";
+import { persistJsonAtomic, readJsonStore, once, forgetPending } from "./store.js";
 import {
   languageCodeSet,
   listLanguages,
 } from "./languages.js";
+
+/** Longest accepted event name (enforced by the admin API, not truncated). */
+export const EVENT_NAME_MAX = 80;
 
 export type Event = {
   id: string;
@@ -28,6 +31,7 @@ let cache: Map<string, Event> | null = null;
 /** Drop the in-memory cache (used by the admin data reset). */
 export function resetEventsCache(): void {
   cache = null;
+  forgetPending(eventsFile());
 }
 
 function makeId(): string {
@@ -36,23 +40,34 @@ function makeId(): string {
 
 async function load(): Promise<Map<string, Event>> {
   if (cache) return cache;
-  await fs.mkdir(config.dataDir, { recursive: true });
-  try {
-    const raw = await fs.readFile(eventsFile(), "utf8");
-    const arr = JSON.parse(raw) as Event[];
-    cache = new Map(arr.map((e) => [e.id, e]));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      cache = new Map();
-    } else {
-      throw err;
-    }
-  }
-  return cache;
+  // Concurrent callers share one read; otherwise each would build its own Map
+  // and the last writer would silently drop the others' changes.
+  return once(eventsFile(), async () => {
+    await fs.mkdir(config.dataDir, { recursive: true });
+    const arr = await readJsonStore<Event[]>(
+      eventsFile(),
+      (raw) => {
+        if (!Array.isArray(raw)) throw new Error("events.json is not an array");
+        return raw as Event[];
+      },
+      [],
+    );
+    cache = new Map(arr.filter((e) => e && typeof e.id === "string").map((e) => [e.id, e]));
+    return cache;
+  });
 }
 
 async function persist(map: Map<string, Event>): Promise<void> {
-  await persistJsonAtomic(eventsFile(), Array.from(map.values()));
+  try {
+    await persistJsonAtomic(eventsFile(), Array.from(map.values()));
+  } catch (err) {
+    // The mutation is already applied in memory, so a failed write would keep
+    // it visible until the next restart, where it silently disappears. Drop the
+    // cache: the next read re-reads what is really stored.
+    cache = null;
+    forgetPending(eventsFile());
+    throw err;
+  }
 }
 
 export async function listEvents(): Promise<Event[]> {
@@ -85,7 +100,7 @@ export async function createEvent(
     .filter((l) => !langs.includes(l));
   const entry: Event = {
     id,
-    name: name.slice(0, 80),
+    name: name.slice(0, EVENT_NAME_MAX),
     languages: langs,
     createdAt: new Date().toISOString(),
   };
@@ -134,7 +149,14 @@ export async function updateEvent(
     if (patch.aiSourceLang === null || patch.aiSourceLang === "") {
       delete entry.aiSourceLang;
     } else {
-      entry.aiSourceLang = patch.aiSourceLang;
+      // An unknown code would silently produce translations from a language the
+      // STT engine does not support, so reject it the same way as the create path.
+      const knownLang = known ?? (await languageCodeSet());
+      const normalized = patch.aiSourceLang.trim().toLowerCase();
+      if (!knownLang.has(normalized)) {
+        throw new Error(`unknown aiSourceLang: ${patch.aiSourceLang}`);
+      }
+      entry.aiSourceLang = normalized;
     }
   }
   if (patch.backgroundExt !== undefined) {

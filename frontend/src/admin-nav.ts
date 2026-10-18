@@ -2,6 +2,7 @@
 // admin page looks and behaves the same and there is a single place to edit.
 
 import { clearAdminToken } from "./session.js";
+import { escapeHtml } from "./ui.js";
 
 export type AdminTab = "events" | "languages" | "ai" | "settings";
 
@@ -58,8 +59,8 @@ export function renderAdminNav(active: AdminTab, title: string, subtitle?: strin
   host.innerHTML = `
     <header class="admin-header">
       <div class="admin-header-text">
-        <h1>${title}</h1>
-        ${subtitle ? `<p class="hint">${subtitle}</p>` : ""}
+        <h1>${escapeHtml(title)}</h1>
+        ${subtitle ? `<p class="hint">${escapeHtml(subtitle)}</p>` : ""}
       </div>
       <div class="admin-header-actions">
         <button type="button" id="admin-logout" class="ghost"><span>Sign out</span></button>

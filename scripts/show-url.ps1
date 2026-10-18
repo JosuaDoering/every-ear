@@ -4,8 +4,8 @@
 $ErrorActionPreference = "Stop"
 Set-Location "$PSScriptRoot\.."
 
-if (-not (Test-Path ".env")) {
-  Write-Error "No .env — run scripts\install-windows.ps1 first."
+if (-not (Test-Path ".env") -and -not (Test-Path "backend\data\settings.json")) {
+  Write-Error "No .env and no backend\data\settings.json — run scripts\install-windows.ps1 first."
   exit 1
 }
 

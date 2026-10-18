@@ -9,7 +9,7 @@
 // First boot seeds the file from environment variables, so the installer / the
 // desktop bootstrap only have to set env once.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeAtomicSync } from "./store.js";
@@ -48,6 +48,27 @@ export type Settings = {
 
 const DEFAULTS_LANGUAGES = process.env.LANGUAGES ?? "en,de,fr,es";
 
+/**
+ * A hostname/IP that can be used as a Caddy site address. Deliberately strict:
+ * the value ends up in the Caddyfile, so anything with whitespace, braces or
+ * newlines would let a caller inject arbitrary Caddy directives.
+ */
+const HOSTNAME_RE =
+  /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*$/i;
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+export function isValidHost(value: string): boolean {
+  // A digits-and-dots value is meant as an IPv4 literal; accepting it as a
+  // "hostname" would make Caddy attempt ACME for a name that cannot resolve.
+  if (/^[0-9.]+$/.test(value)) return IPV4_RE.test(value);
+  return HOSTNAME_RE.test(value) && value.includes(".");
+}
+
+/** Throws a descriptive error for a value that must not reach the Caddyfile. */
+export function assertValidHost(value: string, field: string): void {
+  if (!isValidHost(value)) throw new Error(`invalid ${field}: ${JSON.stringify(value)}`);
+}
+
 let cache: Settings | null = null;
 
 function normalize(p: Partial<Settings>): Settings {
@@ -59,7 +80,14 @@ function normalize(p: Partial<Settings>): Settings {
     languages: p.languages ?? DEFAULTS_LANGUAGES,
     preferredInterface: p.preferredInterface ?? null,
     publicHost: p.publicHost ?? process.env.PUBLIC_HOST ?? process.env.LIVEKIT_NODE_IP ?? null,
-    customDomain: p.customDomain ?? null,
+    // Drop any host that could inject Caddy directives (e.g. a hand-edited or
+    // restored settings.json): an invalid host must not reach the Caddyfile.
+    customDomain:
+      typeof p.customDomain === "string" && p.customDomain.trim()
+        ? isValidHost(p.customDomain.trim())
+          ? p.customDomain.trim()
+          : (console.error("[settings] ignoring invalid customDomain:", p.customDomain), null)
+        : null,
     customCertFile: p.customCertFile ?? null,
     customKeyFile: p.customKeyFile ?? null,
     netcupApiKey: p.netcupApiKey ?? null,
@@ -74,7 +102,16 @@ export function getSettings(): Settings {
       cache = normalize(JSON.parse(readFileSync(settingsFile, "utf8")) as Partial<Settings>);
       return cache;
     } catch (err) {
-      console.error("[settings] failed to read settings.json:", err);
+      // Keep the broken file for inspection, then rebuild from the env vars so
+      // a desktop install (no ADMIN_PASSWORD in the environment) is not locked
+      // out of its own admin UI forever.
+      const backup = `${settingsFile}.corrupt-${Date.now()}`;
+      console.error(`[settings] unreadable settings.json, moved to ${backup}:`, err);
+      try {
+        renameSync(settingsFile, backup);
+      } catch {
+        /* best effort */
+      }
     }
   }
   cache = normalize({});
@@ -82,13 +119,17 @@ export function getSettings(): Settings {
 }
 
 export function saveSettings(next: Settings): Settings {
-  cache = normalize(next);
+  const previous = cache;
+  const normalized = normalize(next);
   try {
-    // Atomic + creates dataDir: never leave a half-written settings file.
-    writeAtomicSync(settingsFile, JSON.stringify(cache, null, 2), 0o600);
+    writeAtomicSync(settingsFile, JSON.stringify(normalized, null, 2), 0o600);
   } catch (err) {
-    console.error("[settings] failed to write settings.json:", err);
+    // Do not pretend the change was persisted: report the failure and keep the
+    // previous state, otherwise the admin UI reports success for lost settings.
+    cache = previous;
+    throw err;
   }
+  cache = normalized;
   return cache;
 }
 
@@ -99,7 +140,15 @@ export function updateSettings(patch: Partial<Settings>): Settings {
 /** Persist the file on first boot if it doesn't exist yet. Idempotent. */
 export function ensureSettingsFile(): Settings {
   const current = getSettings();
-  if (!existsSync(settingsFile)) saveSettings(current);
+  if (!existsSync(settingsFile)) {
+    try {
+      saveSettings(current);
+    } catch (err) {
+      // Boot must not die here: a read-only data dir is reported on every write
+      // attempt with a proper 500 instead of an endless restart loop.
+      console.error("[settings] could not seed settings.json:", err);
+    }
+  }
   return current;
 }
 

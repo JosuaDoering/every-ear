@@ -96,6 +96,37 @@ fi
 is_placeholder_host "$LIVEKIT_NODE_IP" && LIVEKIT_NODE_IP="$DETECTED_IP"
 is_placeholder_host "$PUBLIC_HOST"     && PUBLIC_HOST="$DETECTED_IP"
 
+# These two end up verbatim in the Caddyfile (sed below) and in the generated
+# env file, so anything with whitespace, braces or newlines must be refused
+# here rather than silently turning into extra Caddy directives. DOMAIN must
+# also be a real DNS name (at least one dot) because it is what ACME will issue
+# a certificate for.
+is_host() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'; }
+is_ipv4() {
+  printf '%s' "$1" | grep -Eqx '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}'
+}
+is_domain() {
+  is_host "$1" || return 1
+  case "$1" in *.*) ;; *) return 1 ;; esac
+  case "$1" in *..*|.*|*.) return 1 ;; esac
+  # A numeric value can only be an IPv4 literal, and an IPv4 address cannot
+  # receive an ACME certificate. This also rejects malformed ones like
+  # 1.2.3.4.5, which would otherwise be treated as a DNS name.
+  if printf '%s' "$1" | grep -Eq '^[0-9.]+$'; then return 1; fi
+  return 0
+}
+# Accept a bare IPv4 or a hostname, but a digits-and-dots value must really be
+# an IPv4 address — Caddy would otherwise be handed a site address that cannot
+# be reached (e.g. 1.2.3.4.5).
+if printf '%s' "$PUBLIC_HOST" | grep -Eq '^[0-9.]+$'; then
+  is_ipv4 "$PUBLIC_HOST" || die "invalid PUBLIC_HOST: '$PUBLIC_HOST' (not a valid IPv4 address)"
+else
+  is_host "$PUBLIC_HOST" || die "invalid PUBLIC_HOST: '$PUBLIC_HOST' (use an IPv4 address or hostname)"
+fi
+if [ -n "$DOMAIN" ]; then
+  is_domain "$DOMAIN" || die "invalid DOMAIN: '$DOMAIN' (use a hostname such as events.example.com)"
+fi
+
 log "Install directory : $INSTALL_DIR"
 log "Data directory    : $DATA_DIR"
 log "Listener URL      : https://${DOMAIN:-$PUBLIC_HOST}:${LISTENER_PORT}/"
@@ -150,22 +181,44 @@ cp -a "$REPO_DIR/frontend/dist" "$INSTALL_DIR/frontend/dist"
 # means the admin can immediately use the web interface, and a domain/Netcup
 # credentials provided at install time are available for certificate issuance.
 log "Writing $DATA_DIR/settings.json"
-{
-  echo "{"
-  echo "  \"adminPassword\": \"${ADMIN_PASSWORD}\","
-  echo "  \"listenerPort\": ${LISTENER_PORT},"
-  echo "  \"livekitApiKey\": \"${LIVEKIT_API_KEY}\","
-  echo "  \"livekitApiSecret\": \"${LIVEKIT_API_SECRET}\","
-  echo "  \"languages\": \"${LANGUAGES:-en,de,fr,es}\","
-  echo "  \"preferredInterface\": null,"
-  echo "  \"publicHost\": \"${PUBLIC_HOST}\","
-  echo "  \"customDomain\": $( [ -n "$DOMAIN" ] && echo "\"${DOMAIN}\"" || echo "null" ),"
-  echo "  \"customCertFile\": null,"
-  echo "  \"customKeyFile\": null,"
-  echo "  \"netcupApiKey\": $( [ -n "${NETCUP_API_KEY:-}" ] && echo "\"${NETCUP_API_KEY}\"" || echo "null" ),"
-  echo "  \"createdAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
-  echo "}"
-} > "$DATA_DIR/settings.json"
+# Build the JSON with node instead of string concatenation: passwords and API
+# keys may legitimately contain quotes or backslashes, which would otherwise
+# produce an unparseable settings.json (and an admin lock-out).
+SETTINGS_JSON="$(
+  ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+  LISTENER_PORT="$LISTENER_PORT" \
+  LIVEKIT_API_KEY="$LIVEKIT_API_KEY" \
+  LIVEKIT_API_SECRET="$LIVEKIT_API_SECRET" \
+  LANGUAGES="${LANGUAGES:-en,de,fr,es}" \
+  PUBLIC_HOST="$PUBLIC_HOST" \
+  DOMAIN="$DOMAIN" \
+  NETCUP_API_KEY="${NETCUP_API_KEY:-}" \
+  "$NODE_BIN" -e '
+    const env = process.env;
+    if (!Number.isInteger(Number(env.LISTENER_PORT)) || Number(env.LISTENER_PORT) < 1 || Number(env.LISTENER_PORT) > 65535) {
+      console.error(`invalid LISTENER_PORT: ${env.LISTENER_PORT}`);
+      process.exit(1);
+    }
+    const settings = {
+      adminPassword: env.ADMIN_PASSWORD,
+      listenerPort: Number(env.LISTENER_PORT),
+      livekitApiKey: env.LIVEKIT_API_KEY,
+      livekitApiSecret: env.LIVEKIT_API_SECRET,
+      languages: env.LANGUAGES,
+      preferredInterface: null,
+      publicHost: env.PUBLIC_HOST,
+      customDomain: env.DOMAIN || null,
+      customCertFile: null,
+      customKeyFile: null,
+      netcupApiKey: env.NETCUP_API_KEY || null,
+      createdAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    };
+    process.stdout.write(JSON.stringify(settings, null, 2));
+  '
+)" || die "Could not build settings.json (check LISTENER_PORT)."
+printf '%s\n' "$SETTINGS_JSON" > "$DATA_DIR/settings.json"
+"$NODE_BIN" -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' \
+  "$DATA_DIR/settings.json" || die "Wrote an invalid $DATA_DIR/settings.json"
 chmod 0600 "$DATA_DIR/settings.json"
 
 # ---- initial Caddyfile -----------------------------------------------------
@@ -186,39 +239,67 @@ sed \
 
 # ---- environment file ------------------------------------------------------
 log "Writing $CONFIG_DIR/env"
+# systemd's EnvironmentFile strips surrounding quotes and never expands
+# variables, so the value is wrapped in whichever quote character it does not
+# contain. A value with both kinds (or a newline) cannot be represented and is
+# rejected loudly instead of silently mangling a secret.
+env_line() {
+  local name="$1" value="$2"
+  case "$value" in
+    *$'\n'*) die "value for $name contains a newline, which $CONFIG_DIR/env cannot represent" ;;
+  esac
+  local has_single=0 has_double=0
+  case "$value" in *\'*) has_single=1 ;; esac
+  case "$value" in *'"'*) has_double=1 ;; esac
+  if [ "$has_single" = 1 ] && [ "$has_double" = 1 ]; then
+    die "value for $name contains both ' and \", which $CONFIG_DIR/env cannot represent"
+  fi
+  if [ "$has_single" = 1 ]; then
+    printf '%s="%s"\n' "$name" "$value"
+  else
+    printf "%s='%s'\n" "$name" "$value"
+  fi
+}
 {
   echo "# Generated by scripts/install-debian.sh — do not edit livekit secret here by hand."
-  echo "LIVEKIT_API_KEY=${LIVEKIT_API_KEY}"
-  echo "LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}"
-  echo "LIVEKIT_NODE_IP=${LIVEKIT_NODE_IP}"
-  echo "PUBLIC_HOST=${PUBLIC_HOST}"
-  echo "BACKEND_PORT=${BACKEND_PORT}"
-  echo "ADMIN_PASSWORD=${ADMIN_PASSWORD}"
-  echo "EVERY_EAR_DATA_DIR=${DATA_DIR}"
-  echo "EVERY_EAR_LOG_DIR=${LOG_DIR}"
-  echo "FRONTEND_DIST=${INSTALL_DIR}/frontend/dist"
+  env_line LIVEKIT_API_KEY "$LIVEKIT_API_KEY"
+  env_line LIVEKIT_API_SECRET "$LIVEKIT_API_SECRET"
+  env_line LIVEKIT_NODE_IP "$LIVEKIT_NODE_IP"
+  env_line PUBLIC_HOST "$PUBLIC_HOST"
+  env_line BACKEND_PORT "$BACKEND_PORT"
+  env_line ADMIN_PASSWORD "$ADMIN_PASSWORD"
+  env_line EVERY_EAR_DATA_DIR "$DATA_DIR"
+  env_line EVERY_EAR_LOG_DIR "$LOG_DIR"
+  env_line FRONTEND_DIST "$INSTALL_DIR/frontend/dist"
   echo "EVERY_EAR_MANAGE_CADDY=1"
-  echo "EVERY_EAR_DEFAULT_BG=${INSTALL_DIR}/frontend/dist/bg.jpg"
-  echo "LIVEKIT_WEBHOOK_API_KEY=${LIVEKIT_API_KEY}"
-  echo "LIVEKIT_WEBHOOK_URLS=http://127.0.0.1:${BACKEND_PORT}/api/livekit/webhook"
-  [ -n "${LANGUAGES:-}" ]       && echo "LANGUAGES=${LANGUAGES}"
-  [ -n "${LANGUAGE_NAMES:-}" ]  && echo "LANGUAGE_NAMES='${LANGUAGE_NAMES}'"
-  [ -n "${LANGUAGE_FLAGS:-}" ]  && echo "LANGUAGE_FLAGS='${LANGUAGE_FLAGS}'"
-  [ -n "${OPENROUTER_API_KEY:-}" ] && echo "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
-  [ -n "${OPENROUTER_MODEL:-}" ]   && echo "OPENROUTER_MODEL=${OPENROUTER_MODEL}"
-  [ -n "${RATE_LIMIT_GLOBAL_MAX:-}" ]   && echo "RATE_LIMIT_GLOBAL_MAX=${RATE_LIMIT_GLOBAL_MAX}"
-  [ -n "${RATE_LIMIT_LISTENER_MAX:-}" ] && echo "RATE_LIMIT_LISTENER_MAX=${RATE_LIMIT_LISTENER_MAX}"
+  env_line EVERY_EAR_DEFAULT_BG "$INSTALL_DIR/frontend/dist/bg.jpg"
+  env_line LIVEKIT_WEBHOOK_API_KEY "$LIVEKIT_API_KEY"
+  env_line LIVEKIT_WEBHOOK_URLS "http://127.0.0.1:${BACKEND_PORT}/api/livekit/webhook"
+  if [ -n "${LANGUAGES:-}" ]; then env_line LANGUAGES "$LANGUAGES"; fi
+  if [ -n "${LANGUAGE_NAMES:-}" ]; then env_line LANGUAGE_NAMES "$LANGUAGE_NAMES"; fi
+  if [ -n "${LANGUAGE_FLAGS:-}" ]; then env_line LANGUAGE_FLAGS "$LANGUAGE_FLAGS"; fi
+  if [ -n "${OPENROUTER_API_KEY:-}" ]; then env_line OPENROUTER_API_KEY "$OPENROUTER_API_KEY"; fi
+  if [ -n "${OPENROUTER_MODEL:-}" ]; then env_line OPENROUTER_MODEL "$OPENROUTER_MODEL"; fi
+  if [ -n "${RATE_LIMIT_GLOBAL_MAX:-}" ]; then env_line RATE_LIMIT_GLOBAL_MAX "$RATE_LIMIT_GLOBAL_MAX"; fi
+  if [ -n "${RATE_LIMIT_LISTENER_MAX:-}" ]; then env_line RATE_LIMIT_LISTENER_MAX "$RATE_LIMIT_LISTENER_MAX"; fi
 } > "$CONFIG_DIR/env"
 chmod 0600 "$CONFIG_DIR/env"
 
 # ---- systemd units ---------------------------------------------------------
 log "Installing systemd units"
-for unit in every-ear-livekit every-ear-backend every-ear-caddy; do
-  sed -e "s#/usr/bin/node#${NODE_BIN}#g" \
-      -e "s#/opt/every-ear#${INSTALL_DIR}#g" \
-      -e "s#/etc/every-ear#${CONFIG_DIR}#g" \
-      -e "s#/var/lib/every-ear#${DATA_DIR}#g" \
-      "$REPO_DIR/deploy/systemd/${unit}.service" > "/etc/systemd/system/${unit}.service"
+# `.restart.path` + `.restart.service` are not enabled with the others: the path
+# unit only watches for the web admin's restart marker, so enabling it is what
+# makes "restart required" actually happen on a headless install.
+for unit in every-ear-livekit every-ear-backend every-ear-caddy every-ear-restart; do
+  for suffix in service path; do
+    src="$REPO_DIR/deploy/systemd/${unit}.${suffix}"
+    [ -f "$src" ] || continue
+    sed -e "s#/usr/bin/node#${NODE_BIN}#g" \
+        -e "s#/opt/every-ear#${INSTALL_DIR}#g" \
+        -e "s#/etc/every-ear#${CONFIG_DIR}#g" \
+        -e "s#/var/lib/every-ear#${DATA_DIR}#g" \
+        "$src" > "/etc/systemd/system/${unit}.${suffix}"
+  done
 done
 systemctl daemon-reload
 
@@ -234,7 +315,7 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR"
 
 # ---- start -----------------------------------------------------------------
 log "Enabling and starting services"
-systemctl enable --now every-ear-livekit every-ear-backend every-ear-caddy
+systemctl enable --now every-ear-livekit every-ear-backend every-ear-caddy every-ear-restart.path
 
 sleep 2
 systemctl --no-pager --lines=0 status every-ear-livekit every-ear-backend every-ear-caddy || true

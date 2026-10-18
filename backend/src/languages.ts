@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
-import { persistJsonAtomic } from "./store.js";
+import { persistJsonAtomic, readJsonStore, once, forgetPending } from "./store.js";
 
 export type LanguageEntry = { code: string; name: string; flag: string };
 
@@ -22,6 +22,7 @@ let cache: Map<string, LanguageEntry> | null = null;
 /** Drop the in-memory cache (used by the admin data reset). */
 export function resetLanguagesCache(): void {
   cache = null;
+  forgetPending(file());
 }
 
 export function defaultFlagFor(code: string): string {
@@ -59,24 +60,40 @@ function envSeed(): LanguageEntry[] {
 
 async function load(): Promise<Map<string, LanguageEntry>> {
   if (cache) return cache;
-  await fs.mkdir(config.dataDir, { recursive: true });
-  try {
-    const raw = await fs.readFile(file(), "utf8");
-    const arr = JSON.parse(raw) as LanguageEntry[];
-    cache = new Map(arr.map((l) => [l.code, l]));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+  // Concurrent callers share one read; otherwise each would build its own Map
+  // and the last writer would silently drop the others' changes.
+  return once(file(), async () => {
+    await fs.mkdir(config.dataDir, { recursive: true });
+    // `null` means "file missing or corrupt": both cases seed from LANGUAGES.
+    const arr = await readJsonStore<LanguageEntry[] | null>(
+      file(),
+      (raw) => {
+        if (!Array.isArray(raw)) throw new Error("languages.json is not an array");
+        return raw as LanguageEntry[];
+      },
+      null,
+    );
+    if (arr === null) {
       cache = new Map(envSeed().map((l) => [l.code, l]));
       if (cache.size > 0) await persist(cache);
     } else {
-      throw err;
+      cache = new Map(arr.filter((l) => l && typeof l.code === "string").map((l) => [l.code, l]));
     }
-  }
-  return cache;
+    return cache;
+  });
 }
 
 async function persist(m: Map<string, LanguageEntry>): Promise<void> {
-  await persistJsonAtomic(file(), Array.from(m.values()));
+  try {
+    await persistJsonAtomic(file(), Array.from(m.values()));
+  } catch (err) {
+    // The mutation is already applied in memory, so a failed write would keep
+    // the new language visible until the next restart, where it silently
+    // disappears. Drop the cache: the next read re-reads what is really stored.
+    cache = null;
+    forgetPending(file());
+    throw err;
+  }
 }
 
 export async function listLanguages(): Promise<LanguageEntry[]> {

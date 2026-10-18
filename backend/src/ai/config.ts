@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
-import { persistJsonAtomic } from "../store.js";
+import { persistJsonAtomic, readJsonStore } from "../store.js";
 
 export type AiConfig = {
   /** OpenRouter API key. Stays server-side; only ever returned masked. */
@@ -45,16 +45,16 @@ async function persist(c: AiConfig): Promise<void> {
 export async function loadAiConfig(): Promise<AiConfig> {
   if (cache) return cache;
   await fs.mkdir(config.dataDir, { recursive: true });
-  try {
-    const raw = await fs.readFile(file(), "utf8");
-    cache = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<AiConfig>) };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      cache = { ...DEFAULTS, ...envSeed() };
-      if (cache.openRouterApiKey || cache.model) await persist(cache);
-    } else {
-      throw err;
-    }
+  // A torn ai-config.json must not take down the admin UI (and the AI relay):
+  // fall back to the env seed and move the unreadable file aside.
+  const stored = await readJsonStore<Partial<AiConfig> | null>(
+    file(),
+    (raw) => (raw && typeof raw === "object" ? (raw as Partial<AiConfig>) : null),
+    null,
+  );
+  cache = { ...DEFAULTS, ...envSeed(), ...(stored ?? {}) };
+  if (stored === null && (cache.openRouterApiKey || cache.model)) {
+    await persist(cache).catch(() => undefined);
   }
   return cache;
 }
@@ -70,7 +70,14 @@ export async function updateAiConfig(patch: Partial<AiConfig>): Promise<AiConfig
   if (typeof patch.sttEngine === "string") next.sttEngine = patch.sttEngine;
   if (typeof patch.ttsProvider === "string") next.ttsProvider = patch.ttsProvider;
   cache = next;
-  await persist(next);
+  try {
+    await persist(next);
+  } catch (err) {
+    // Report the failure and keep the previous values: the admin UI must not
+    // show a key/model that was never written to disk.
+    cache = current;
+    throw err;
+  }
   return next;
 }
 

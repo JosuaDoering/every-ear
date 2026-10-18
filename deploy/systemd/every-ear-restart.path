@@ -1,0 +1,12 @@
+[Unit]
+Description=Every Ear restart trigger (watches the web admin's restart marker)
+Documentation=https://github.com/JosuaDoering/every-ear
+
+[Path]
+# PathExists= is level-triggered: it fires on boot too if a marker survived a
+# crash, which is exactly what we want.
+PathExists=/var/lib/every-ear/.restart-requested
+Unit=every-ear-restart.service
+
+[Install]
+WantedBy=multi-user.target

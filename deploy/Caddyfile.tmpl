@@ -22,16 +22,34 @@
 }
 
 (handlers) {
+	# Kept in sync with backend/src/security-headers.ts (the backend rewrites
+	# this file on boot, so this copy only matters for the initial seed).
+	header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	header X-Content-Type-Options "nosniff"
+	header X-Frame-Options "DENY"
+	header Referrer-Policy "no-referrer"
+	header Permissions-Policy "camera=(), geolocation=(), microphone=(self)"
 	handle_path /livekit/* {
 		reverse_proxy 127.0.0.1:7880
 	}
-	handle /api/* {
+	# `/api` alone is not matched by `/api/*`; without the bare path the
+	# request falls through to the SPA route and answers HTML.
+	@api path /api /api/*
+	handle @api {
 		reverse_proxy 127.0.0.1:__BACKEND_PORT__
 	}
 	handle {
 		root * __FRONTEND_DIST__
-		try_files {path} /index.html
-		file_server
+		# A path containing a dot is a real file: 404 instead of the SPA
+		# shell, so a stale bundle surfaces as a missing file.
+		@asset path *.*
+		handle @asset {
+			file_server
+		}
+		handle {
+			try_files {path} /index.html
+			file_server
+		}
 	}
 }
 

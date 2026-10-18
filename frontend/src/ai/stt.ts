@@ -23,6 +23,17 @@ interface SpeechRecognitionLike {
 
 type RecognitionCtor = new () => SpeechRecognitionLike;
 
+// Errors that will fail identically on every restart. Restarting anyway would
+// spin the recognition engine (and drain the battery) until the page is
+// reloaded — e.g. after the user revokes microphone access mid-event.
+const FATAL_ERRORS = new Set([
+  "not-allowed",
+  "service-not-allowed",
+  "audio-capture",
+  "language-not-supported",
+  "bad-grammar",
+]);
+
 function getCtor(): RecognitionCtor | null {
   const w = window as unknown as {
     SpeechRecognition?: RecognitionCtor;
@@ -39,10 +50,18 @@ export type SttHandlers = {
   onError?: (msg: string) => void;
 };
 
+// A session that ends (almost) immediately is not normal end-of-silence: the
+// engine is failing (e.g. `network`). Restarting at once would spin a tight
+// loop, so the delay doubles for each such rapid end.
+const RAPID_END_MS = 1000;
+const MAX_RESTART_DELAY_MS = 10_000;
+
 export class SpeechToText {
   private rec: SpeechRecognitionLike | null = null;
   private active = false;
   private started = false;
+  private restartedAt = 0;
+  private rapidEnds = 0;
 
   constructor(private lang: string, private readonly h: SttHandlers) {}
 
@@ -79,30 +98,39 @@ export class SpeechToText {
     };
     rec.onerror = (e) => {
       // 'no-speech'/'aborted' are routine — onend will restart us.
-      if (e.error !== "no-speech" && e.error !== "aborted") {
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      if (FATAL_ERRORS.has(e.error)) {
+        this.active = false;
         this.h.onError?.(e.error);
+        return;
       }
+      this.h.onError?.(e.error);
     };
     rec.onend = () => {
       this.started = false;
       if (!this.active) return;
       this.h.onRestart?.();
-      // Restart the session to keep recognition continuous.
-      try {
-        rec.start();
-        this.started = true;
-      } catch {
-        // Will retry on the next tick if it threw because it's mid-stop.
-        window.setTimeout(() => {
-          if (this.active && !this.started) {
-            try {
-              rec.start();
-              this.started = true;
-            } catch {
-              /* give up silently */
-            }
-          }
-        }, 250);
+
+      const sessionMs = this.restartedAt ? Date.now() - this.restartedAt : Infinity;
+      this.rapidEnds = sessionMs < RAPID_END_MS ? this.rapidEnds + 1 : 0;
+      const delay = Math.min(250 * 2 ** this.rapidEnds, MAX_RESTART_DELAY_MS);
+
+      const restart = () => {
+        if (!this.active || this.started || this.rec !== rec) return;
+        this.restartedAt = Date.now();
+        try {
+          rec.start();
+          this.started = true;
+        } catch {
+          // start() throws while the previous session is still stopping; the
+          // next end event will schedule another attempt.
+        }
+      };
+
+      if (delay <= 250) {
+        restart();
+      } else {
+        window.setTimeout(restart, delay);
       }
     };
 
