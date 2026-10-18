@@ -242,6 +242,18 @@ async function start() {
 
       if (entry.role === "ai-operator") {
         const codes = event.aiLanguages ?? [];
+        // The source language is a property of the event, set once by the admin.
+        // Without it the operator cannot pick the STT language, and translation
+        // would guess — so refuse the login with an actionable message.
+        if (!event.aiSourceLang) {
+          return reply.code(409).send({
+            error: "this event has no AI source language — set it on the event page first",
+          });
+        }
+        const source = await getLanguage(event.aiSourceLang);
+        if (!source) {
+          return reply.code(410).send({ error: "the AI source language is no longer configured" });
+        }
         const aiLanguages: {
           code: string;
           name: string;
@@ -267,7 +279,9 @@ async function start() {
           eventId: event.id,
           eventName: event.name,
           eventHasBackground: Boolean(event.backgroundExt),
-          sourceLang: event.aiSourceLang ?? "",
+          sourceLang: event.aiSourceLang,
+          sourceLangName: source.name,
+          sourceLangFlag: source.flag,
           sttEngine: aiCfg.sttEngine,
           aiLanguages,
         };
@@ -304,7 +318,14 @@ async function start() {
   // ---- AI translation (SSE stream) -----------------------------------------
 
   app.post<{
-    Body: { text?: string; sourceLang?: string; targetLang?: string; context?: string[] };
+    Body: {
+      text?: string;
+      sourceLang?: string;
+      targetLang?: string;
+      context?: string[];
+      /** Previous translation of this still-unfinished sentence (continuation). */
+      partial?: string;
+    };
     Headers: { authorization?: string };
   }>("/api/ai/translate",
     // The shared concurrency limiter / circuit breaker in translate.ts is the
@@ -319,6 +340,10 @@ async function start() {
     const context = Array.isArray(req.body?.context)
       ? req.body!.context.filter((c): c is string => typeof c === "string").slice(-3)
       : [];
+    // Continuation text must stay short: it is an assistant prefill, not input
+    // worth paying for, and a huge value would let a client bill the server.
+    const partial =
+      typeof req.body?.partial === "string" ? req.body.partial.slice(0, 1000) : undefined;
     if (!text) return reply.code(400).send({ error: "text required" });
     // A translation is billed per token against the server's key, and the
     // chunker never sends more than one sentence: cap the input so a valid
@@ -355,7 +380,10 @@ async function start() {
     }
 
     const [src, tgt] = await Promise.all([
-      getLanguage(sourceLang),
+      // The event's source language is authoritative: the AI operator has no
+      // picker, so a client-supplied `sourceLang` is only a hint. Falling back to
+      // it keeps older clients working when the event has no source set.
+      getLanguage(event.aiSourceLang ?? sourceLang),
       getLanguage(targetLang),
     ]);
     const sourceName = src?.name ?? sourceLang;
@@ -397,6 +425,9 @@ async function start() {
           send({ delta });
         },
         abort.signal,
+        event.glossary,
+        event.id,
+        partial,
       );
       send({ done: true, text: full });
     } catch (err) {

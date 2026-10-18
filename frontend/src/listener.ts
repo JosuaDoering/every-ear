@@ -1,6 +1,7 @@
 import {
   Room,
   RoomEvent,
+  ConnectionState,
   Track,
   type RemoteTrack,
   type RemoteTrackPublication,
@@ -26,10 +27,18 @@ const $nowPlaying = document.getElementById("now-playing") as HTMLDivElement;
 const $npFlag = document.getElementById("np-flag") as HTMLSpanElement;
 const $npName = document.getElementById("np-name") as HTMLSpanElement;
 const $npSuffix = document.getElementById("np-suffix") as HTMLSpanElement;
+const $npBadge = document.getElementById("np-badge") as HTMLSpanElement;
 const $intro = document.getElementById("intro") as HTMLParagraphElement;
 const $captions = document.getElementById("captions") as HTMLDivElement;
 const $readAloudRow = document.getElementById("read-aloud-row") as HTMLLabelElement;
 const $readAloud = document.getElementById("read-aloud") as HTMLInputElement;
+const $subtitleTools = document.getElementById("subtitle-tools") as HTMLDivElement;
+const $sizeOptions = Array.from(
+  document.querySelectorAll<HTMLButtonElement>(".size-option"),
+);
+const $subtitleFullscreen = document.getElementById(
+  "subtitle-fullscreen",
+) as HTMLButtonElement;
 
 type EventEntry = {
   id: string;
@@ -39,7 +48,15 @@ type EventEntry = {
 };
 
 const STORAGE_KEY = "ll-listener-prefs";
-type Prefs = { eventId?: string; language?: string };
+type SubtitleSize = "sm" | "md" | "lg";
+type Prefs = {
+  eventId?: string;
+  language?: string;
+  /** Subtitle text size, kept per device — eyes don't change per event. */
+  subtitleSize?: SubtitleSize;
+  /** Large view: subtitles fill the screen, for people at the back of a room. */
+  largeView?: boolean;
+};
 
 let room: Room | null = null;
 let levelTimer: number | null = null;
@@ -53,14 +70,6 @@ function loadPrefs(): Prefs {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Prefs;
   } catch {
     return {};
-  }
-}
-
-function savePrefs(prefs: Prefs) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
-  } catch {
-    // ignore quota / private-mode failures
   }
 }
 
@@ -79,6 +88,7 @@ function setPlaying(playing: boolean) {
   // AI channels have no shared audio meter in this build — captions only.
   $levelWrap.hidden = !playing || ai;
   $readAloudRow.hidden = !(playing && ai);
+  $subtitleTools.hidden = !playing;
   if (!playing) clearCaptions();
 }
 
@@ -91,46 +101,194 @@ function selectedIsAi(): boolean {
   return Boolean(ev?.languages.find((l) => l.code === $select.value)?.ai);
 }
 
-// ---- Captions --------------------------------------------------------------
+// ---- Subtitle presentation -------------------------------------------------
+//
+// Small, quiet controls under the subtitle band. Both settings are remembered
+// on the device: someone who needs large text needs it at every event.
 
-const captionById = new Map<number, string>();
-const captionOrder: number[] = [];
+const SIZE_CLASS: Record<SubtitleSize, string> = {
+  sm: "subtitle-sm",
+  md: "subtitle-md",
+  lg: "subtitle-lg",
+};
+
+let prefs: Prefs = loadPrefs();
+
+function savePrefs(patch: Partial<Prefs>) {
+  prefs = { ...prefs, ...patch };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+function applySubtitlePrefs() {
+  const size: SubtitleSize = prefs.subtitleSize ?? "md";
+  for (const [key, cls] of Object.entries(SIZE_CLASS)) {
+    $captions.classList.toggle(cls, key === size);
+  }
+  for (const btn of $sizeOptions) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.size === size));
+  }
+  const large = Boolean(prefs.largeView);
+  document.body.classList.toggle("subtitle-large-view", large);
+  $subtitleFullscreen.setAttribute("aria-pressed", String(large));
+  const label = $subtitleFullscreen.querySelector(".subtitle-mode-label");
+  if (label) label.textContent = large ? "Normal view" : "Large view";
+}
+
+for (const btn of $sizeOptions) {
+  btn.addEventListener("click", () => {
+    const size = btn.dataset.size as SubtitleSize | undefined;
+    if (!size) return;
+    savePrefs({ subtitleSize: size });
+    applySubtitlePrefs();
+    renderCaptions();
+  });
+}
+
+$subtitleFullscreen.addEventListener("click", () => {
+  savePrefs({ largeView: !prefs.largeView });
+  applySubtitlePrefs();
+  renderCaptions();
+});
+
+// Escape leaves the large view — the on-screen button stays reachable there.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && prefs.largeView) {
+    savePrefs({ largeView: false });
+    applySubtitlePrefs();
+  }
+});
+
+// ---- Captions --------------------------------------------------------------
+//
+// Captions are addressed by a monotonic sentence id. Interim updates (the
+// model still writing) may arrive late or out of order because they are sent
+// unreliably; finals are reliable. Rules that keep the text from jumping
+// backwards or flickering:
+//   * an interim update never overwrites text we already hold as final
+//   * an interim update for an older sentence than the newest one is ignored
+//   * a snapshot (sent periodically so late joiners catch up) only fills gaps
+// The rendered band shows the newest sentence large and the two before it
+// smaller and dimmer, so the reader can follow on a phone at arm's length.
+
+const MAX_CAPTIONS = 3;
+
+type CaptionEntry = { text: string; final: boolean };
+const captions = new Map<number, CaptionEntry>();
+let newestId = 0;
+
+const WAITING_HINT = "Waiting for the speaker…";
+let waitingTimer: number | null = null;
 
 function handleCaption(payload: Uint8Array) {
   const msg = decodeCaption(payload);
-  if (!msg) return;
-  if (!captionById.has(msg.id)) captionOrder.push(msg.id);
-  captionById.set(msg.id, msg.text);
-  while (captionOrder.length > 3) {
-    const drop = captionOrder.shift()!;
-    captionById.delete(drop);
+  if (!msg || msg.text === undefined) return;
+  const text = msg.text.trim();
+  if (!text) return;
+
+  const existing = captions.get(msg.id);
+  if (msg.snapshot) {
+    // A snapshot is background catch-up: never regress a live caption and
+    // never speak, because the listener may already have heard this line.
+    if (!existing) {
+      captions.set(msg.id, { text, final: msg.final });
+      newestId = Math.max(newestId, msg.id);
+      trimCaptions();
+      renderCaptions();
+    }
+    return;
   }
+
+  if (!msg.final) {
+    if (existing?.final) return;
+    if (msg.id < newestId) return;
+  } else if (existing?.final && existing.text === text) {
+    return;
+  } else if (existing?.final) {
+    // A repeated final for the same sentence with a different wording: keep
+    // the latest, but don't speak it twice.
+    captions.set(msg.id, { text, final: true });
+    renderCaptions();
+    return;
+  }
+
+  captions.set(msg.id, { text, final: msg.final });
+  newestId = Math.max(newestId, msg.id);
+  trimCaptions();
   renderCaptions();
+  armWaitingHint();
+
   if (msg.final && selectedIsAi() && $readAloud.checked) {
-    speakCaption(msg.text, $select.value);
+    speakCaption(text, $select.value);
   }
+}
+
+function trimCaptions() {
+  while (captions.size > MAX_CAPTIONS) {
+    const oldest = Math.min(...captions.keys());
+    captions.delete(oldest);
+  }
+}
+
+/** After a pause, refresh the band so the empty state can show "waiting". */
+function armWaitingHint() {
+  if (waitingTimer != null) {
+    clearTimeout(waitingTimer);
+    waitingTimer = null;
+  }
+  if (!room) return;
+  waitingTimer = window.setTimeout(() => {
+    waitingTimer = null;
+    if (!room || room.state !== ConnectionState.Connected) return;
+    if (captions.size === 0) renderCaptions();
+  }, 4500);
 }
 
 function renderCaptions() {
-  const ids = captionOrder;
-  const lastId = ids[ids.length - 1];
-  const prevId = ids[ids.length - 2];
-  const lastText = lastId != null ? captionById.get(lastId) ?? "" : "";
-  const prevText = prevId != null ? captionById.get(prevId) ?? "" : "";
   $captions.innerHTML = "";
-  if (prevText) {
-    const prev = document.createElement("span");
-    prev.className = "caption-prev";
-    prev.textContent = prevText;
-    $captions.appendChild(prev);
+  const ids = [...captions.keys()].sort((a, b) => a - b);
+
+  if (ids.length === 0) {
+    // An AI channel without text is not broken, it is just quiet. Saying so
+    // prevents the "are subtitles even on?" confusion.
+    $captions.hidden = !(room && selectedIsAi());
+    if (!$captions.hidden) {
+      const hint = document.createElement("span");
+      hint.className = "caption-waiting";
+      if (room?.state !== ConnectionState.Connected) hint.textContent = "Connecting…";
+      else if (!activeAiOperator(room)) hint.textContent = "Waiting for the AI operator…";
+      else hint.textContent = WAITING_HINT;
+      $captions.appendChild(hint);
+    }
+    return;
   }
-  if (lastText) $captions.appendChild(document.createTextNode(lastText));
-  $captions.hidden = !(prevText || lastText);
+
+  $captions.hidden = false;
+  ids.forEach((id, index) => {
+    const entry = captions.get(id)!;
+    const isNewest = index === ids.length - 1;
+    const line = document.createElement("span");
+    line.className = `caption-line${isNewest ? " caption-current" : " caption-prev"}${
+      entry.final ? "" : " caption-interim"
+    }`;
+    line.textContent = entry.text;
+    $captions.appendChild(line);
+  });
+
+  // Keep the newest line in view on small screens with a long transcript.
+  $captions.scrollTop = $captions.scrollHeight;
 }
 
 function clearCaptions() {
-  captionById.clear();
-  captionOrder.length = 0;
+  captions.clear();
+  newestId = 0;
+  if (waitingTimer != null) {
+    clearTimeout(waitingTimer);
+    waitingTimer = null;
+  }
   $captions.innerHTML = "";
   $captions.hidden = true;
   try {
@@ -221,6 +379,14 @@ function stopLevelMeter() {
   }
 }
 
+/** The AI operator of a room: it publishes captions only, no audio track. */
+function activeAiOperator(r: Room): RemoteParticipant | null {
+  for (const p of r.remoteParticipants.values()) {
+    if (p.identity.startsWith("ai-")) return p;
+  }
+  return null;
+}
+
 function activeBroadcaster(r: Room): RemoteParticipant | null {
   for (const p of r.remoteParticipants.values()) {
     for (const pub of p.audioTrackPublications.values()) {
@@ -235,10 +401,28 @@ function updateSpeakerLabel() {
     $nowPlaying.hidden = true;
     return;
   }
+  $npBadge.hidden = true;
   if (selectedIsAi()) {
-    $npFlag.textContent = "🤖";
-    $npName.textContent = "AI translation";
-    $npSuffix.textContent = "live captions on your device";
+    // AI channels get a voice, but the pill still names a person: listeners
+    // trust "Anna (AI)" far more than an anonymous robot.
+    const p = activeAiOperator(room);
+    const name = p?.name?.trim() || "";
+    $npFlag.textContent = "🧑";
+    if (name) {
+      $npName.textContent = name;
+      $npBadge.hidden = false;
+      $npSuffix.textContent = $readAloud.checked
+        ? "is translating and reads aloud"
+        : "is translating for you";
+    } else {
+      // Nobody is publishing right now: name the state instead of pretending
+      // there is a live translation.
+      $npFlag.textContent = "🎙";
+      $npName.textContent = "Waiting";
+      $npSuffix.textContent = "for the AI operator to start…";
+      $nowPlaying.hidden = false;
+      return;
+    }
     $nowPlaying.hidden = false;
     return;
   }
@@ -344,12 +528,15 @@ async function start() {
       detachAll();
       $nowPlaying.hidden = true;
       setStatus("");
+      renderCaptions();
     });
 
     await room.connect(livekitUrl(), token);
     setPlaying(true);
     setStatus("");
     updateSpeakerLabel();
+    renderCaptions();
+    armWaitingHint();
   } catch (err) {
     console.error(err);
     setStatus(err instanceof Error ? err.message : "Unknown error", true);
@@ -395,6 +582,7 @@ $select.addEventListener("change", () => {
 });
 
 $readAloud.addEventListener("change", () => {
+  updateSpeakerLabel();
   if ($readAloud.checked) primeSpeech();
   else
     try {
@@ -403,6 +591,8 @@ $readAloud.addEventListener("change", () => {
       // ignore
     }
 });
+
+applySubtitlePrefs();
 
 (async () => {
   try {
@@ -417,8 +607,6 @@ $readAloud.addEventListener("change", () => {
       $play.hidden = true;
       return;
     }
-
-    const prefs = loadPrefs();
 
     for (const e of events) {
       const opt = document.createElement("option");

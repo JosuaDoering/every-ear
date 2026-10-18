@@ -10,6 +10,8 @@ import {
 
 /** Longest accepted event name (enforced by the admin API, not truncated). */
 export const EVENT_NAME_MAX = 80;
+/** Longest accepted glossary text (newline-separated entries). */
+export const EVENT_GLOSSARY_MAX = 4000;
 
 export type Event = {
   id: string;
@@ -19,6 +21,11 @@ export type Event = {
   aiLanguages?: string[];
   /** Source language the AI operator speaks, transcribed before translation. */
   aiSourceLang?: string;
+  /**
+   * Newline-separated terms with the wording the translator must use, e.g.
+   * "Every Ear = Every Ear" or "Synode => Synod". Fed to the model as context.
+   */
+  glossary?: string;
   backgroundExt?: string;
   createdAt: string;
   active?: boolean;
@@ -118,6 +125,7 @@ export async function updateEvent(
     languages?: string[];
     aiLanguages?: string[];
     aiSourceLang?: string | null;
+    glossary?: string | null;
     backgroundExt?: string | null;
     active?: boolean;
   },
@@ -158,6 +166,11 @@ export async function updateEvent(
       }
       entry.aiSourceLang = normalized;
     }
+  }
+  if (patch.glossary !== undefined) {
+    const text = (patch.glossary ?? "").trim();
+    if (text) entry.glossary = text.slice(0, EVENT_GLOSSARY_MAX);
+    else delete entry.glossary;
   }
   if (patch.backgroundExt !== undefined) {
     if (patch.backgroundExt === null) delete entry.backgroundExt;

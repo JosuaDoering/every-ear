@@ -145,7 +145,12 @@ async function verifyCode(code: string) {
     });
     if (res.status === 404) throw new Error("Code not recognised.");
     if (res.status === 400) throw new Error("Code must be 6 digits.");
-    if (!res.ok) throw new Error(`Verification failed (${res.status}).`);
+    if (!res.ok) {
+      // 409/410 carry an actionable message (e.g. the event has no AI source
+      // language); show it instead of a bare status code.
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `Verification failed (${res.status}).`);
+    }
     const grant = (await res.json()) as TranslatorGrant;
     saveTranslatorGrant(grant);
     setStatus("Signed in.", false);

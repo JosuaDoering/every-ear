@@ -1907,6 +1907,91 @@ button.is-loading.danger.outline::after {
   margin-top: var(--space-2);
 }
 
+.required-mark {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--warning);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+select.required-missing {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+}
+
+/* Admin: per-event glossary editor. */
+.glossary-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  font-size: var(--text-sm);
+}
+.glossary-field textarea {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  min-height: 7rem;
+  resize: vertical;
+}
+.glossary-example {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+/* Admin: AI translation usage (tokens + estimated cost) per event. */
+.usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.usage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  justify-content: space-between;
+}
+.usage-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.usage-hint {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.usage-metrics {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+.usage-metric {
+  display: flex;
+  flex-direction: column;
+}
+.usage-metric strong {
+  font-size: var(--text-base);
+}
+.usage-metric span {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
 /* Second (AI operator) code form: name + button only. */
 #ai-code-form {
   grid-template-columns: 1fr auto;
@@ -1918,25 +2003,252 @@ button.is-loading.danger.outline::after {
   font-weight: 600;
 }
 
-/* Listener subtitle overlay — readable band under the now-playing pill. */
+/* Listener subtitle band — newest line large, the previous two muted above it,
+   so the reader can follow a conversation without losing the thread. */
 .captions {
-  min-height: 2.6em;
-  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  /* Room for the newest line plus the two before it; grows with the chosen
+     subtitle size instead of clipping large text. */
+  min-height: calc(3.4em * var(--caption-scale, 1));
+  max-height: calc(9.5em * var(--caption-scale, 1));
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  font-size: var(--text-lg);
-  line-height: 1.35;
+  line-height: 1.4;
   color: var(--fg);
-  text-align: center;
+  text-align: left;
+  scroll-behavior: smooth;
 }
 .captions:empty {
   display: none;
 }
-.captions .caption-prev {
-  color: var(--muted);
-  font-size: var(--text-sm);
+.caption-line {
   display: block;
+  overflow-wrap: anywhere;
+}
+.captions .caption-current {
+  font-size: var(--caption-current, var(--text-lg));
+  font-weight: 600;
+  color: var(--fg);
+}
+.captions .caption-current.caption-interim {
+  /* Still being written: soften it so it does not look final. */
+  color: var(--muted);
+  font-weight: 500;
+}
+.captions .caption-prev {
+  font-size: var(--caption-prev, var(--text-sm));
+  color: var(--muted-soft);
+}
+.caption-waiting {
+  font-size: var(--text-sm);
+  color: var(--muted-soft);
+  font-style: italic;
+}
+
+/* Subtitle size steps. The page sets the base size here; the caption rules
+   above scale from it, so one class changes the whole band. */
+.captions.subtitle-sm {
+  --caption-current: var(--text-base);
+  --caption-prev: var(--text-xs);
+  --caption-scale: 0.9;
+}
+.captions.subtitle-md {
+  --caption-current: var(--text-lg);
+  --caption-prev: var(--text-sm);
+  --caption-scale: 1;
+}
+.captions.subtitle-lg {
+  --caption-current: var(--text-2xl);
+  --caption-prev: var(--text-base);
+  --caption-scale: 1.35;
+}
+
+/* Quiet controls under the subtitle band: three size steps + a large view. */
+.subtitle-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: calc(-1 * var(--space-2));
+}
+.subtitle-tools-label {
+  font-size: var(--text-xs);
+  color: var(--muted-soft);
+}
+.size-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--surface);
+}
+.size-option {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.size-option[data-size="sm"] { font-size: var(--text-xs); }
+.size-option[data-size="md"] { font-size: var(--text-sm); }
+.size-option[data-size="lg"] { font-size: var(--text-base); }
+.size-option + .size-option {
+  border-left: 1px solid var(--border);
+}
+.size-option[aria-pressed="true"] {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+.subtitle-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 4px;
+}
+.subtitle-mode[aria-pressed="true"] {
+  color: var(--brand);
+}
+
+/* Large view: subtitles take over the screen, for listeners far from the
+   device or with limited vision. Everything else steps out of the way. */
+body.subtitle-large-view {
+  overflow: hidden;
+}
+body.subtitle-large-view main > :not(.captions):not(.subtitle-tools) {
+  display: none !important;
+}
+body.subtitle-large-view .captions {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  max-height: none;
+  min-height: 0;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  /* Bottom padding clears the floating size switch, which sits on top of the
+     band in this mode; without it the last line hides behind it. */
+  padding: max(var(--space-6), env(safe-area-inset-top)) var(--space-6)
+    calc(max(var(--space-6), env(safe-area-inset-bottom)) + 3.25rem);
+  border: 0;
+  border-radius: 0;
+  background: #0b1120;
+  color: #f8fafc;
+}
+body.subtitle-large-view .captions .caption-current {
+  /* The size switch keeps working here, so the reader picks once. */
+  font-size: calc(clamp(1.6rem, 7vw, 3.4rem) * var(--caption-scale, 1));
+  line-height: 1.25;
+  color: #ffffff;
+}
+body.subtitle-large-view .captions .caption-current.caption-interim {
+  color: #cbd5e1;
+}
+body.subtitle-large-view .captions .caption-prev {
+  font-size: calc(clamp(1rem, 3.4vw, 1.6rem) * var(--caption-scale, 1));
+  color: #94a3b8;
+}
+body.subtitle-large-view .caption-waiting {
+  color: #94a3b8;
+}
+body.subtitle-large-view .subtitle-tools {
+  position: fixed;
+  left: 50%;
+  bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 41;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(6px);
+}
+body.subtitle-large-view .subtitle-tools-label,
+body.subtitle-large-view .size-option,
+body.subtitle-large-view .subtitle-mode {
+  color: #cbd5e1;
+}
+body.subtitle-large-view .size-switch {
+  background: transparent;
+  border-color: rgba(148, 163, 184, 0.35);
+}
+body.subtitle-large-view .size-option + .size-option {
+  border-left-color: rgba(148, 163, 184, 0.35);
+}
+body.subtitle-large-view .size-option[aria-pressed="true"],
+body.subtitle-large-view .subtitle-mode[aria-pressed="true"] {
+  background: rgba(79, 70, 229, 0.35);
+  color: #ffffff;
+}
+
+/* Small "AI" marker next to a speaker name. */
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+.now-playing-text {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 0;
+}
+
+/* Admin: collapsed "Advanced" panel keeps rarely-tuned values out of the way. */
+.advanced-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2);
+}
+.advanced-block > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--muted);
+}
+.advanced-block[open] > summary {
+  margin-bottom: var(--space-3);
+}
+.advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Translator: the event's fixed source language. */
+.source-fixed {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.source-fixed .hint {
+  margin: 0;
 }
 
 /* "Read aloud" toggle on AI channels. */
@@ -1958,14 +2270,26 @@ button.is-loading.danger.outline::after {
 }
 .ai-channel-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
+}
+/* Latency line under a channel: quiet, but turns amber when a language is
+   falling behind so the operator notices without reading numbers. */
+.ai-channel-health {
+  flex-basis: 100%;
+  font-size: var(--text-xs);
+  color: var(--muted-soft);
+  font-variant-numeric: tabular-nums;
+}
+.ai-channel-health[data-behind="true"] {
+  color: var(--warning);
 }
 .ai-channel-lang {
   font-weight: 600;

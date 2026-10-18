@@ -6,13 +6,13 @@ import {
   ConnectionState,
   Track,
 } from "livekit-client";
-import { livekitUrl, fetchLanguages } from "./livekit.js";
+import { livekitUrl } from "./livekit.js";
 import { loadTranslatorGrant, clearTranslatorGrant } from "./session.js";
 import { escapeHtml, setButtonLoading } from "./ui.js";
 import { SentenceChunker } from "./ai/chunker.js";
 import { SpeechToText } from "./ai/stt.js";
 import { encodeCaption } from "./ai/types.js";
-import { AiOperator, type ChannelState } from "./ai/operator.js";
+import { AiOperator, type ChannelState, type ChannelStats } from "./ai/operator.js";
 
 const grant = loadTranslatorGrant();
 if (!grant) {
@@ -31,6 +31,7 @@ const $translatorDetail = document.getElementById("translator-detail") as HTMLPa
 const $mic = document.getElementById("mic") as HTMLSelectElement;
 const $micRefresh = document.getElementById("mic-refresh") as HTMLButtonElement;
 const $micHint = document.getElementById("mic-hint") as HTMLParagraphElement;
+const $micSystemHint = document.getElementById("mic-system-hint") as HTMLSpanElement;
 const $connect = document.getElementById("connect") as HTMLButtonElement;
 const $stop = document.getElementById("stop-broadcast") as HTMLButtonElement;
 const $signOut = document.getElementById("sign-out") as HTMLButtonElement;
@@ -42,8 +43,8 @@ const $reloadPrompt = document.getElementById("reload-prompt") as HTMLDivElement
 const $reloadPromptText = document.getElementById("reload-prompt-text") as HTMLParagraphElement;
 const $reloadNow = document.getElementById("reload-now") as HTMLButtonElement;
 const $level = document.getElementById("level") as HTMLDivElement;
-const $sourceLangLabel = document.getElementById("source-lang-label") as HTMLLabelElement;
-const $sourceLang = document.getElementById("source-lang") as HTMLSelectElement;
+const $sourceFixed = document.getElementById("source-fixed") as HTMLParagraphElement;
+const $sourceFixedName = document.getElementById("source-fixed-name") as HTMLElement;
 const $aiChannels = document.getElementById("ai-channels") as HTMLDivElement;
 
 let room: Room | null = null;
@@ -75,33 +76,20 @@ $greeting.textContent = `Hello, ${grant.name}`;
 if (isAi) {
   const count = grant.aiLanguages?.length ?? 0;
   $translatorDetail.textContent = `AI translation into ${count} language${count === 1 ? "" : "s"}`;
-  $sourceLangLabel.hidden = false;
+  // The source language belongs to the event: the operator speaks what the
+  // organiser configured, so there is nothing to pick here.
+  const sourceName = grant.sourceLangName ?? grant.sourceLang?.toUpperCase() ?? "—";
+  $sourceFixedName.textContent = `${grant.sourceLangFlag ?? ""} ${sourceName}`.trim();
+  $sourceFixed.hidden = false;
   $aiChannels.hidden = false;
+  // Web Speech ignores deviceId, so a picker here would only pretend to work.
+  $mic.disabled = true;
+  $micRefresh.hidden = true;
+  $micSystemHint.hidden = false;
   renderAiChannels();
-  void populateSourceLanguages();
 } else {
   $translatorDetail.textContent = `Translating into ${grant.flag ?? ""}  ${grant.languageName ?? ""}`;
 }
-
-async function populateSourceLanguages() {
-  try {
-    const langs = await fetchLanguages();
-    $sourceLang.innerHTML = "";
-    for (const l of langs) {
-      const opt = document.createElement("option");
-      opt.value = l.code;
-      opt.textContent = `${l.flag}  ${l.name}`;
-      $sourceLang.appendChild(opt);
-    }
-    if (grant?.sourceLang) $sourceLang.value = grant.sourceLang;
-  } catch {
-    setStatus("Could not load languages for the source picker.", true);
-  }
-}
-
-$sourceLang.addEventListener("change", () => {
-  operator?.setSourceLang($sourceLang.value);
-});
 
 // One status row per AI language channel.
 function renderAiChannels() {
@@ -113,7 +101,8 @@ function renderAiChannels() {
     row.innerHTML = `<span class="ai-channel-lang">${escapeHtml(ai.flag)} ${escapeHtml(
       ai.name,
     )}</span>
-      <span class="ai-channel-state" data-state="idle">idle</span>`;
+      <span class="ai-channel-state" data-state="idle">idle</span>
+      <span class="ai-channel-health" hidden></span>`;
     $aiChannels.appendChild(row);
   }
 }
@@ -125,6 +114,27 @@ function setChannelState(code: string, state: ChannelState, detail?: string) {
   if (!el) return;
   el.dataset.state = state;
   el.textContent = detail ? `${state} — ${detail}` : state;
+}
+
+/**
+ * Show what the channel is actually doing: sentences delivered and how long
+ * listeners wait. Numbers are rounded hard — the point is spotting a channel
+ * that is falling behind, not measuring milliseconds.
+ */
+function setChannelStats(code: string, stats: ChannelStats) {
+  const el = $aiChannels.querySelector<HTMLElement>(
+    `.ai-channel-row[data-code="${code}"] .ai-channel-health`,
+  );
+  if (!el) return;
+  if (stats.done === 0) {
+    el.hidden = true;
+    return;
+  }
+  const first = (stats.firstTextMs / 1000).toFixed(1);
+  const lag = (stats.latencyMs / 1000).toFixed(1);
+  el.hidden = false;
+  el.dataset.behind = Number(lag) > 4 ? "true" : "false";
+  el.textContent = `${stats.done} sentences · first text after ${first}s · complete after ${lag}s`;
 }
 
 type OnAirState = "off" | "live" | "muted" | "reconnecting" | "error";
@@ -159,8 +169,9 @@ function setBroadcastUI(broadcasting: boolean) {
   // The AI operator has no single live/mute audio track, so no mute toggle.
   $muteToggle.hidden = !broadcasting || isAi;
   // While broadcasting, the mic select is disabled — switching device
-  // mid-stream is jarring and rarely what you want.
-  $mic.disabled = broadcasting;
+  // mid-stream is jarring and rarely what you want. The AI path stays disabled
+  // because speech recognition cannot follow a chosen device at all.
+  $mic.disabled = broadcasting || isAi;
   $micRefresh.disabled = broadcasting;
   $micHint.hidden = broadcasting;
 }
@@ -310,7 +321,9 @@ async function startPreviewLevelMeter() {
   stopLevelMeter();
   teardownPreview();
   try {
-    const deviceId = $mic.value || undefined;
+    // The AI path always records the system default device, so preview the
+    // same one the recogniser will use.
+    const deviceId = isAi ? undefined : $mic.value || undefined;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: deviceId ? { deviceId: { exact: deviceId } } : true,
     });
@@ -451,8 +464,8 @@ async function connectAi() {
   try {
     operator = new AiOperator(
       grant!,
-      () => $sourceLang.value || grant!.sourceLang || "en",
       (code, state, detail) => setChannelState(code, state, detail),
+      (code, stats) => setChannelStats(code, stats),
     );
     await operator.start();
     setBroadcastUI(true);

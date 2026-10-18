@@ -29,19 +29,23 @@
         <p class="hint" id="translator-detail">Translating into …</p>
       </div>
 
-      <label id="source-lang-label" hidden>
-        Source language (what you speak)
-        <select id="source-lang"></select>
-      </label>
+      <p id="source-fixed" class="source-fixed" hidden>
+        Speaking <strong id="source-fixed-name"></strong>
+        <span class="hint">— set for this event by the organiser</span>
+      </p>
 
       <div id="ai-channels" class="ai-channels" hidden></div>
 
-      <label>
+      <label id="mic-label">
         Microphone
         <div class="mic-row">
           <select id="mic"></select>
           <button type="button" id="mic-refresh" class="secondary mic-refresh" aria-label="Refresh microphone list" title="Refresh microphone list">↻</button>
         </div>
+        <span class="hint" id="mic-system-hint" hidden>
+          Speech recognition always records the system default microphone — change it
+          in your operating system's sound settings.
+        </span>
       </label>
 
       <div>
