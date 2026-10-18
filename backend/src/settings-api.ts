@@ -20,6 +20,7 @@ import {
 import { reloadCaddy } from "./caddy.js";
 import { listCandidates } from "./network.js";
 import { isLiveKitReachable, resetStatsData } from "./stats.js";
+import { resetUsageCache } from "./ai/usage.js";
 import { ensureDefaultEvent, resetEventsCache } from "./events.js";
 import { listCodes, resetCodesCache } from "./codes.js";
 import { listLanguages, resetLanguagesCache } from "./languages.js";
@@ -404,7 +405,7 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
   // In-memory caches are reset and the defaults are re-seeded, so no process
   // restart is needed.
   app.post("/reset", async () => {
-    const files = ["events.json", "codes.json", "languages.json", "stats.json"];
+    const files = ["events.json", "codes.json", "languages.json", "stats.json", "ai-usage.json"];
     for (const f of files) {
       await fs.rm(path.join(config.dataDir, f), { force: true });
     }
@@ -419,6 +420,7 @@ export const settingsApiPlugin: FastifyPluginAsync = async (app: FastifyInstance
     resetCodesCache();
     resetLanguagesCache();
     resetStatsData();
+    resetUsageCache();
 
     // Re-seed the defaults so the admin UI stays usable immediately.
     await listLanguages();

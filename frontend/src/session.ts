@@ -24,6 +24,8 @@ export type TranslatorGrant = {
   sttEngine?: string;
   // Present for role "ai-operator".
   sourceLang?: string;
+  sourceLangName?: string;
+  sourceLangFlag?: string;
   aiLanguages?: AiLanguageGrant[];
 };
 

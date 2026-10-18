@@ -34,6 +34,7 @@ type EventEntry = {
   languages: string[];
   aiLanguages?: string[];
   aiSourceLang?: string;
+  glossary?: string;
   backgroundExt?: string;
   createdAt: string;
   active?: boolean;
@@ -59,6 +60,13 @@ type ChannelStat = {
 
 type HistoryPoint = { t: number; n: number };
 
+type UsageTotals = {
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+};
+
 // ---- Refs ------------------------------------------------------------------
 
 const $detailName = document.getElementById("detail-name") as HTMLHeadingElement;
@@ -66,8 +74,15 @@ const $detailMeta = document.getElementById("detail-meta") as HTMLParagraphEleme
 const $detailLanguages = document.getElementById("detail-languages") as HTMLDivElement;
 const $detailAiLanguages = document.getElementById("detail-ai-languages") as HTMLDivElement;
 const $detailAiSource = document.getElementById("detail-ai-source") as HTMLSelectElement;
+const $aiSourceRequired = document.getElementById("ai-source-required") as HTMLElement;
 const $detailSaveLangs = document.getElementById("detail-save-langs") as HTMLButtonElement;
+const $detailGlossary = document.getElementById("detail-glossary") as HTMLTextAreaElement;
+const $detailGlossaryCount = document.getElementById("detail-glossary-count") as HTMLElement;
+const $detailSaveGlossary = document.getElementById(
+  "detail-save-glossary",
+) as HTMLButtonElement;
 const $detailStats = document.getElementById("detail-stats") as HTMLDivElement;
+const $detailUsage = document.getElementById("detail-usage") as HTMLDivElement;
 const $detailHistory = document.getElementById("detail-history") as HTMLDivElement;
 const $detailBgPreview = document.getElementById("detail-bg-preview") as HTMLDivElement;
 const $detailBgForm = document.getElementById("detail-bg-form") as HTMLFormElement;
@@ -170,8 +185,18 @@ function applyExclusion() {
   sync($detailAiLanguages, manual);
 }
 
+function syncAiSourceRequirement() {
+  // AI languages without a source language would leave the AI operator unable
+  // to start (the backend refuses the login), so mark it up front.
+  const hasAi = selectedFromPicker($detailAiLanguages).length > 0;
+  $aiSourceRequired.hidden = !hasAi;
+  $detailAiSource.classList.toggle("required-missing", hasAi && !$detailAiSource.value);
+}
+
 $detailLanguages.addEventListener("change", applyExclusion);
 $detailAiLanguages.addEventListener("change", applyExclusion);
+$detailAiLanguages.addEventListener("change", syncAiSourceRequirement);
+$detailAiSource.addEventListener("change", syncAiSourceRequirement);
 
 function renderAiSourceOptions() {
   if (!event) return;
@@ -212,6 +237,10 @@ function renderEvent() {
   renderLangPicker($detailAiLanguages, new Set(event.aiLanguages ?? []));
   renderAiSourceOptions();
   applyExclusion();
+  syncAiSourceRequirement();
+
+  $detailGlossary.value = event.glossary ?? "";
+  updateGlossaryCount();
 
   $detailBgPreview.style.backgroundImage = `url("/api/events/${event.id}/background?t=${Date.now()}")`;
 
@@ -482,6 +511,11 @@ $detailSaveLangs.addEventListener("click", async () => {
   const langs = selectedFromPicker($detailLanguages);
   const aiLangs = selectedFromPicker($detailAiLanguages);
   const aiSource = $detailAiSource.value || null;
+  if (aiLangs.length > 0 && !aiSource) {
+    toast("Pick the AI source language first — it is required for AI translation.", "error");
+    $detailAiSource.focus();
+    return;
+  }
   setButtonLoading($detailSaveLangs, true);
   try {
     const res = await authedFetch(`/api/admin/events/${event.id}`, {
@@ -503,6 +537,37 @@ $detailSaveLangs.addEventListener("click", async () => {
     await reloadAll();
   } finally {
     setButtonLoading($detailSaveLangs, false);
+  }
+});
+
+// ---- Glossary --------------------------------------------------------------
+
+function updateGlossaryCount() {
+  $detailGlossaryCount.textContent = String($detailGlossary.value.length);
+}
+
+$detailGlossary.addEventListener("input", updateGlossaryCount);
+
+$detailSaveGlossary.addEventListener("click", async () => {
+  if (!event) return;
+  const glossary = $detailGlossary.value.trim();
+  setButtonLoading($detailSaveGlossary, true);
+  try {
+    const res = await authedFetch(`/api/admin/events/${event.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ glossary }),
+    });
+    if (res.status === 401) return signOut();
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      toast((body as { error?: string }).error ?? `Save failed (HTTP ${res.status})`, "error");
+      return;
+    }
+    toast(glossary ? "Glossary saved." : "Glossary cleared.", "success");
+    await loadEvent();
+  } finally {
+    setButtonLoading($detailSaveGlossary, false);
   }
 });
 
@@ -618,8 +683,13 @@ async function refreshChannelStats() {
     $detailStats.innerHTML = `<div class="empty">Statistics unavailable (HTTP ${res.status}).</div>`;
     return;
   }
-  const data = (await res.json()) as { channels: ChannelStat[]; history: HistoryPoint[] };
+  const data = (await res.json()) as {
+    channels: ChannelStat[];
+    history: HistoryPoint[];
+    usage?: UsageTotals;
+  };
   renderChannelStats(data.channels);
+  renderUsage(data.usage);
   renderHistoryChart(data.history ?? []);
 }
 
@@ -648,6 +718,41 @@ function renderChannelStats(channels: ChannelStat[]) {
       </div>`;
     $detailStats.appendChild(row);
   }
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+function formatUsd(n: number): string {
+  if (n <= 0) return "—";
+  if (n < 0.01) return `<$0.01`;
+  return `$${n.toFixed(2)}`;
+}
+
+/**
+ * Token and cost totals for AI translation. Cost is an estimate from the
+ * model's current price, so it is labelled as such.
+ */
+function renderUsage(usage: UsageTotals | undefined) {
+  if (!usage || usage.requests === 0) {
+    $detailUsage.hidden = true;
+    return;
+  }
+  const total = usage.promptTokens + usage.completionTokens;
+  $detailUsage.hidden = false;
+  $detailUsage.innerHTML = `
+    <div class="usage-head">
+      <span class="usage-title">AI translation usage</span>
+      <span class="usage-hint">all time · cost estimated from the model price</span>
+    </div>
+    <div class="usage-metrics">
+      <span class="usage-metric"><strong>${usage.requests.toLocaleString()}</strong><span>requests</span></span>
+      <span class="usage-metric"><strong>${formatTokens(total)}</strong><span>tokens</span></span>
+      <span class="usage-metric"><strong>${formatUsd(usage.costUsd)}</strong><span>est. cost</span></span>
+    </div>`;
 }
 
 const HISTORY_BUCKET_MS = 5 * 60 * 1000;

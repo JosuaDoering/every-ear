@@ -9,6 +9,11 @@ export type CaptionMessage = {
   lang: string;
   /** Whether this is the final text for the sentence (vs. a streaming update). */
   final: boolean;
+  /**
+   * Backlog catch-up for listeners who joined late. Listeners render these
+   * without speaking them, and never let them overwrite newer text.
+   */
+  snapshot?: boolean;
 };
 
 const encoder = new TextEncoder();
@@ -28,6 +33,7 @@ export function decodeCaption(payload: Uint8Array): CaptionMessage | null {
         text: obj.text,
         lang: typeof obj.lang === "string" ? obj.lang : "",
         final: Boolean(obj.final),
+        snapshot: obj.snapshot === true,
       };
     }
   } catch {

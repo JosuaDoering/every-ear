@@ -63,8 +63,12 @@
           <p class="hint">Covered by AI translation — subtitles and on-device read-aloud. A language can be manual or AI, never both.</p>
           <div id="detail-ai-languages" class="lang-grid"></div>
           <label class="ai-source-label">
-            AI source language
+            AI source language <span class="required-mark" id="ai-source-required" hidden>required</span>
             <select id="detail-ai-source" aria-label="AI source language"></select>
+            <span class="hint">
+              The language the AI operator speaks. Every AI language is translated
+              from it, so the operator does not choose a source language.
+            </span>
           </label>
           <button type="button" class="primary small self-start" id="detail-save-langs">
             <span>Save languages</span>
@@ -74,9 +78,33 @@
 
       <section class="admin-block">
         <div class="admin-subblock">
+          <h3>Glossary</h3>
+          <p class="hint">
+            Names and terms the AI must get right, one per line. Use
+            <code>source = translation</code> when a term needs a specific wording,
+            or just the word to keep it unchanged. Example:
+          </p>
+          <pre class="glossary-example">Synode = Synod
+Every Ear
+Pastor Weber = Pastor Weber</pre>
+          <label class="glossary-field">
+            Terms for AI translation
+            <textarea id="detail-glossary" rows="6" maxlength="4000"
+              placeholder="Synode = Synod&#10;Every Ear"></textarea>
+            <span class="hint"><span id="detail-glossary-count">0</span> / 4000 characters</span>
+          </label>
+          <button type="button" class="primary small self-start" id="detail-save-glossary">
+            <span>Save glossary</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="admin-block">
+        <div class="admin-subblock">
           <h3>Channel statistics</h3>
           <p class="hint">Per language channel: listeners connected right now, unique listeners in the last 24 hours, and effective translation broadcast time.</p>
           <div id="detail-stats" class="stats-list"></div>
+          <div id="detail-usage" class="usage-panel" hidden></div>
           <div id="detail-history" class="stats-chart" hidden></div>
         </div>
       </section>

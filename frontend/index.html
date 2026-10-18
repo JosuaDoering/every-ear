@@ -31,7 +31,10 @@
 
       <div id="now-playing" class="now-playing" hidden>
         <span class="now-playing-flag" id="np-flag"></span>
-        <span><strong id="np-name"></strong> <span id="np-suffix">is translating for you</span></span>
+        <span class="now-playing-text">
+          <strong id="np-name"></strong><span id="np-badge" class="ai-badge" hidden>AI</span>
+          <span id="np-suffix">is translating for you</span>
+        </span>
       </div>
 
       <label class="read-aloud-row" id="read-aloud-row" hidden>
@@ -39,7 +42,19 @@
         <span>Read aloud on this device</span>
       </label>
 
-      <div id="captions" class="captions" hidden></div>
+      <div id="captions" class="captions" hidden aria-live="polite"></div>
+
+      <div id="subtitle-tools" class="subtitle-tools" hidden>
+        <span class="subtitle-tools-label" aria-hidden="true">A</span>
+        <div class="size-switch" role="group" aria-label="Subtitle size">
+          <button type="button" class="size-option" data-size="sm" aria-pressed="false">A</button>
+          <button type="button" class="size-option" data-size="md" aria-pressed="true">A</button>
+          <button type="button" class="size-option" data-size="lg" aria-pressed="false">A</button>
+        </div>
+        <button type="button" id="subtitle-fullscreen" class="subtitle-mode" aria-pressed="false">
+          <span aria-hidden="true">⤢</span><span class="subtitle-mode-label">Large view</span>
+        </button>
+      </div>
 
       <div id="level-wrap" hidden>
         <div class="level"><div id="level" class="level-bar"></div></div>

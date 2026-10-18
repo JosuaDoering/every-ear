@@ -39,7 +39,22 @@ const $aiKey = document.getElementById("ai-key") as HTMLInputElement;
 const $aiModel = document.getElementById("ai-model") as HTMLSelectElement;
 const $aiRefreshModels = document.getElementById("ai-refresh-models") as HTMLButtonElement;
 const $aiTemp = document.getElementById("ai-temp") as HTMLInputElement;
+const $aiTempReset = document.getElementById("ai-temp-reset") as HTMLButtonElement;
 const $aiSubmit = document.getElementById("ai-submit") as HTMLButtonElement;
+const $aiStatus = document.getElementById("ai-status") as HTMLSpanElement;
+const $aiKeyMasked = document.getElementById("ai-key-masked") as HTMLElement;
+const $aiModelCurrent = document.getElementById("ai-model-current") as HTMLElement;
+const $aiKeyHint = document.getElementById("ai-key-hint") as HTMLElement;
+
+const RECOMMENDED_TEMPERATURE = 0.3;
+
+function renderStatus(hasKey: boolean, model: string, keyMask: string) {
+  const configured = hasKey && Boolean(model);
+  $aiStatus.textContent = configured ? "Ready" : hasKey ? "Model missing" : "API key missing";
+  $aiStatus.className = `status-pill ${configured ? "ok" : "warn"}`;
+  $aiKeyMasked.textContent = hasKey ? keyMask : "not set";
+  $aiModelCurrent.textContent = model || "not selected";
+}
 
 // Keep a saved/custom model selectable even if it isn't in the catalogue.
 function ensureModelOption(model: string) {
@@ -91,14 +106,20 @@ async function loadConfig() {
     temperature: number;
   };
   $aiKey.value = "";
-  $aiKey.placeholder = cfg.hasKey
-    ? `Saved (${cfg.openRouterApiKey}) — leave blank to keep`
-    : "sk-or-…";
-  $aiTemp.value = String(cfg.temperature ?? 0.3);
+  $aiKey.placeholder = cfg.hasKey ? "Saved — leave blank to keep" : "sk-or-…";
+  $aiKeyHint.textContent = cfg.hasKey
+    ? `Saved key ${cfg.openRouterApiKey}. Leave blank to keep it.`
+    : "Paste a key from openrouter.ai/keys. It is only used server-side.";
+  $aiTemp.value = String(cfg.temperature ?? RECOMMENDED_TEMPERATURE);
+  renderStatus(cfg.hasKey, cfg.model, cfg.openRouterApiKey);
   await loadAiModels(cfg.model);
 }
 
 $aiRefreshModels.addEventListener("click", () => void loadAiModels());
+
+$aiTempReset.addEventListener("click", () => {
+  $aiTemp.value = String(RECOMMENDED_TEMPERATURE);
+});
 
 $aiForm.addEventListener("submit", async (e) => {
   e.preventDefault();

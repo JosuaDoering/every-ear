@@ -19,6 +19,7 @@ import {
   createEvent,
   deleteEvent,
   ensureDefaultEvent,
+  EVENT_GLOSSARY_MAX,
   EVENT_NAME_MAX,
   getEvent,
   listEvents,
@@ -34,6 +35,7 @@ import {
   validLanguage,
 } from "./languages.js";
 import { loadAiConfig, updateAiConfig, maskKey } from "./ai/config.js";
+import { usageForEvent } from "./ai/usage.js";
 import { statsForRoom } from "./stats.js";
 import { settingsApiPlugin } from "./settings-api.js";
 
@@ -219,11 +221,17 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     const history = [...buckets.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([t, n]) => ({ t, n }));
-    return { channels, history };
+    return { channels, history, usage: await usageForEvent(event.id) };
   });
 
   app.post<{
-    Body: { name?: string; languages?: string[]; aiLanguages?: string[]; aiSourceLang?: string };
+    Body: {
+      name?: string;
+      languages?: string[];
+      aiLanguages?: string[];
+      aiSourceLang?: string;
+      glossary?: string;
+    };
   }>("/events", async (req, reply) => {
     const name = req.body?.name?.trim();
     const languages = Array.isArray(req.body?.languages) ? req.body!.languages : [];
@@ -246,7 +254,22 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
         error: `a language can't be both manual and AI: ${overlap.join(", ")}`,
       });
     }
+    // AI translation needs to know what is being spoken; the operator has no
+    // language picker, so an event without a source language can never go live.
+    if (aiLanguages.length > 0 && !aiSourceLang) {
+      return reply.code(400).send({ error: "AI languages require an AI source language" });
+    }
+    const glossary = req.body?.glossary;
+    if (typeof glossary === "string" && glossary.length > EVENT_GLOSSARY_MAX) {
+      return reply.code(400).send({
+        error: `glossary too long (max ${EVENT_GLOSSARY_MAX} characters)`,
+      });
+    }
     const event = await createEvent(name, languages, aiLanguages, aiSourceLang);
+    if (typeof glossary === "string" && glossary.trim()) {
+      const withGlossary = await updateEvent(event.id, { glossary });
+      return withGlossary ?? event;
+    }
     return event;
   });
 
@@ -257,6 +280,7 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       languages?: string[];
       aiLanguages?: string[];
       aiSourceLang?: string | null;
+      glossary?: string | null;
       active?: boolean;
     };
   }>("/events/:id", async (req, reply) => {
@@ -268,6 +292,7 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       languages?: string[];
       aiLanguages?: string[];
       aiSourceLang?: string | null;
+      glossary?: string | null;
       active?: boolean;
     } = {};
     if (typeof req.body?.name === "string") {
@@ -290,6 +315,15 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
         return reply.code(400).send({ error: `unknown aiSourceLang: ${patch.aiSourceLang}` });
       }
     }
+    if (typeof req.body?.glossary === "string" || req.body?.glossary === null) {
+      const glossary = req.body.glossary ?? "";
+      if (glossary.length > EVENT_GLOSSARY_MAX) {
+        return reply.code(400).send({
+          error: `glossary too long (max ${EVENT_GLOSSARY_MAX} characters)`,
+        });
+      }
+      patch.glossary = glossary;
+    }
     if (typeof req.body?.active === "boolean") patch.active = req.body.active;
 
     // Reject any overlap between the effective manual and AI language sets.
@@ -300,6 +334,13 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       return reply.code(400).send({
         error: `a language can't be both manual and AI: ${overlap.join(", ")}`,
       });
+    }
+    // Clearing the source language while AI languages remain would strand the
+    // AI operator (no STT language) on the next login.
+    const effSource =
+      patch.aiSourceLang !== undefined ? patch.aiSourceLang : existing.aiSourceLang;
+    if (effAi.length > 0 && !effSource) {
+      return reply.code(400).send({ error: "AI languages require an AI source language" });
     }
 
     const updated = await updateEvent(req.params.id, patch);
