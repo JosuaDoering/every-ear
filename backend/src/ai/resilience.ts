@@ -195,3 +195,13 @@ export const openRouterBreaker = new CircuitBreaker(
   Math.max(1_000, Number(process.env.OPENROUTER_BREAKER_RESET_MS ?? 30_000)),
 );
 export const translationCache = new LruCache<string, string>(200);
+
+// Groq speech-to-text: short-lived uploads, so more concurrency is fine, but a
+// failing upstream must still fail fast instead of stacking audio posts.
+export const groqSemaphore = new Semaphore(
+  Math.max(1, Number(process.env.GROQ_MAX_CONCURRENCY ?? 6)),
+);
+export const groqBreaker = new CircuitBreaker(
+  Math.max(1, Number(process.env.GROQ_BREAKER_THRESHOLD ?? 5)),
+  Math.max(1_000, Number(process.env.GROQ_BREAKER_RESET_MS ?? 30_000)),
+);

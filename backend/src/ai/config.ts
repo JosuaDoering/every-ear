@@ -3,14 +3,26 @@ import path from "node:path";
 import { config } from "../config.js";
 import { persistJsonAtomic, readJsonStore } from "../store.js";
 
+/** STT engines the translator/operator UI knows how to drive. */
+export const STT_ENGINES = ["web-speech", "groq"] as const;
+export type SttEngine = (typeof STT_ENGINES)[number];
+
+/** Whisper models Groq serves (see console.groq.com/docs/speech-to-text). */
+export const GROQ_STT_MODELS = ["whisper-large-v3-turbo", "whisper-large-v3"] as const;
+export type GroqSttModel = (typeof GROQ_STT_MODELS)[number];
+
 export type AiConfig = {
   /** OpenRouter API key. Stays server-side; only ever returned masked. */
   openRouterApiKey: string;
   /** OpenRouter model id, e.g. "openai/gpt-4o-mini". */
   model: string;
   temperature: number;
-  /** Forward-compatible (phase 5): "web-speech" | "whisper". */
+  /** "web-speech" (browser) or "groq" (server-side Whisper via Groq). */
   sttEngine: string;
+  /** Groq API key for speech-to-text. Stays server-side; returned masked. */
+  groqApiKey: string;
+  /** Groq Whisper model id used for transcription. */
+  groqSttModel: string;
   /** Forward-compatible (phase 4): TTS provider for the server-side fallback. */
   ttsProvider: string;
 };
@@ -20,6 +32,8 @@ const DEFAULTS: AiConfig = {
   model: "",
   temperature: 0.3,
   sttEngine: "web-speech",
+  groqApiKey: "",
+  groqSttModel: "whisper-large-v3-turbo",
   ttsProvider: "edge",
 };
 
@@ -35,6 +49,8 @@ function envSeed(): Partial<AiConfig> {
   const seed: Partial<AiConfig> = {};
   if (process.env.OPENROUTER_API_KEY) seed.openRouterApiKey = process.env.OPENROUTER_API_KEY;
   if (process.env.OPENROUTER_MODEL) seed.model = process.env.OPENROUTER_MODEL;
+  if (process.env.GROQ_API_KEY) seed.groqApiKey = process.env.GROQ_API_KEY;
+  if (process.env.GROQ_STT_MODEL) seed.groqSttModel = process.env.GROQ_STT_MODEL;
   return seed;
 }
 
@@ -68,6 +84,8 @@ export async function updateAiConfig(patch: Partial<AiConfig>): Promise<AiConfig
     next.temperature = Math.min(2, Math.max(0, patch.temperature));
   }
   if (typeof patch.sttEngine === "string") next.sttEngine = patch.sttEngine;
+  if (typeof patch.groqApiKey === "string") next.groqApiKey = patch.groqApiKey;
+  if (typeof patch.groqSttModel === "string") next.groqSttModel = patch.groqSttModel;
   if (typeof patch.ttsProvider === "string") next.ttsProvider = patch.ttsProvider;
   cache = next;
   try {

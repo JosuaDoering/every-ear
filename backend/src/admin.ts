@@ -34,7 +34,13 @@ import {
   updateLanguage,
   validLanguage,
 } from "./languages.js";
-import { loadAiConfig, updateAiConfig, maskKey } from "./ai/config.js";
+import {
+  loadAiConfig,
+  updateAiConfig,
+  maskKey,
+  STT_ENGINES,
+  GROQ_STT_MODELS,
+} from "./ai/config.js";
 import { usageForEvent } from "./ai/usage.js";
 import { statsForRoom } from "./stats.js";
 import { settingsApiPlugin } from "./settings-api.js";
@@ -45,6 +51,21 @@ function constantTimeEqual(a: string, b: string): boolean {
   const left = createHash("sha256").update(a).digest();
   const right = createHash("sha256").update(b).digest();
   return timingSafeEqual(left, right);
+}
+
+/** Consistent ai-config payload for GET and PUT (keys only ever masked). */
+function aiConfigResponse(cfg: Awaited<ReturnType<typeof loadAiConfig>>) {
+  return {
+    openRouterApiKey: maskKey(cfg.openRouterApiKey),
+    hasKey: Boolean(cfg.openRouterApiKey),
+    model: cfg.model,
+    temperature: cfg.temperature,
+    sttEngine: cfg.sttEngine,
+    groqApiKey: maskKey(cfg.groqApiKey),
+    groqHasKey: Boolean(cfg.groqApiKey),
+    groqSttModel: cfg.groqSttModel,
+    ttsProvider: cfg.ttsProvider,
+  };
 }
 
 function authorized(header: string | undefined): boolean {
@@ -83,14 +104,7 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
 
   app.get("/ai-config", async () => {
     const cfg = await loadAiConfig();
-    return {
-      openRouterApiKey: maskKey(cfg.openRouterApiKey),
-      hasKey: Boolean(cfg.openRouterApiKey),
-      model: cfg.model,
-      temperature: cfg.temperature,
-      sttEngine: cfg.sttEngine,
-      ttsProvider: cfg.ttsProvider,
-    };
+    return aiConfigResponse(cfg);
   });
 
   app.put<{
@@ -99,9 +113,11 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
       model?: string;
       temperature?: number;
       sttEngine?: string;
+      groqApiKey?: string;
+      groqSttModel?: string;
       ttsProvider?: string;
     };
-  }>("/ai-config", async (req) => {
+  }>("/ai-config", async (req, reply) => {
     const patch: Parameters<typeof updateAiConfig>[0] = {};
     const key = req.body?.openRouterApiKey;
     // Only overwrite the key when a real (non-masked) value is sent.
@@ -110,17 +126,29 @@ export const adminPlugin: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
     if (typeof req.body?.model === "string") patch.model = req.body.model.trim();
     if (typeof req.body?.temperature === "number") patch.temperature = req.body.temperature;
-    if (typeof req.body?.sttEngine === "string") patch.sttEngine = req.body.sttEngine;
+    if (typeof req.body?.sttEngine === "string") {
+      const engine = req.body.sttEngine.trim();
+      // Reject unknown engines: a typo would otherwise persist silently and
+      // the operator page would fall back to Web Speech without anyone noticing.
+      if (!(STT_ENGINES as readonly string[]).includes(engine)) {
+        return reply.code(400).send({ error: `unknown sttEngine: ${engine}` });
+      }
+      patch.sttEngine = engine;
+    }
+    const groqKey = req.body?.groqApiKey;
+    if (typeof groqKey === "string" && groqKey && !groqKey.startsWith("…")) {
+      patch.groqApiKey = groqKey.trim();
+    }
+    if (typeof req.body?.groqSttModel === "string") {
+      const sttModel = req.body.groqSttModel.trim();
+      if (!(GROQ_STT_MODELS as readonly string[]).includes(sttModel)) {
+        return reply.code(400).send({ error: `unknown groqSttModel: ${sttModel}` });
+      }
+      patch.groqSttModel = sttModel;
+    }
     if (typeof req.body?.ttsProvider === "string") patch.ttsProvider = req.body.ttsProvider;
     const cfg = await updateAiConfig(patch);
-    return {
-      openRouterApiKey: maskKey(cfg.openRouterApiKey),
-      hasKey: Boolean(cfg.openRouterApiKey),
-      model: cfg.model,
-      temperature: cfg.temperature,
-      sttEngine: cfg.sttEngine,
-      ttsProvider: cfg.ttsProvider,
-    };
+    return aiConfigResponse(cfg);
   });
 
   // Proxy OpenRouter's model catalogue so the admin UI can offer a dropdown

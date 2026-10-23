@@ -50,3 +50,37 @@ electron-builder to confirm the payload actually contains the sidecar binaries.
 `.github/workflows/build.yml` runs on every PR (mac/win/linux) and
 `.github/workflows/release.yml` on `v*` tags. Both use the same fetch and build
 steps, so a fix must hold for both. Validate workflow edits with `actionlint`.
+
+## Deployment on the production server
+
+The app runs on a Debian 12 arm64 chroot on a Samsung Galaxy S9+ (Android
+kernel 4.9, Magisk autostart, **no systemd**), at `/opt/every-ear`, managed by
+supervisor (`/etc/supervisor/conf.d/every-ear.conf`).
+
+- SSH: `root@192.168.1.118:2222`. The Tailscale IP `100.123.97.65` was used
+  earlier but is not reachable any more — use the LAN address.
+- Manual update: `/usr/local/sbin/every-ear-manual-update.sh` (backup → git
+  reset → build → restart → rollback on error, no apt). Nightly job:
+  `/usr/local/sbin/every-ear-auto-update.sh` driven by `every-ear-update-loop.sh`
+  (03:00–05:59). Both log to `/var/log/every-ear/`.
+- Runtime data lives in `/var/lib/every-ear` (`settings.json`, `Caddyfile`,
+  `events.json`, certs, `ai-usage.json`), secrets in `/etc/every-ear/env`.
+  Neither is touched by an update.
+
+Lessons that cost time:
+
+- **`sysctl` settings do not survive a reboot.** There is no init in the
+  chroot, so `/etc/init.d/procps` (which would run `sysctl --system`) never
+  executes, and `start-services.sh` does not call it either. `/etc/sysctl.d/99-every-ear.conf`
+  alone is inert; something in the boot chain must apply it.
+- **`scripts/doctor.sh` checks more than it claims.** The HTTPS test curls
+  `127.0.0.1` but prints `https://$HOST/`, so it reports ✓ even when the LAN IP
+  is unreachable. Do not trust that line as a reachability check.
+- **Bare-IP HTTPS breaks once a custom domain is configured.**
+  `generateCaddyfile()` computes `host = siteHost(domain || publicHost)` and then
+  guards the LAN site block with `host !== domain`, which is unreachable when a
+  domain exists. Without SNI, Caddy cannot pick a certificate and answers
+  `tlsv1 alert internal error`. Use `https://every-ear.de:8443/`.
+- **Restarting LiveKit drops connected listeners**, even when no rooms are
+  listed a few seconds earlier. Check for participants, not just rooms, and
+  prefer off-hours.

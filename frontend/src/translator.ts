@@ -11,6 +11,7 @@ import { loadTranslatorGrant, clearTranslatorGrant } from "./session.js";
 import { escapeHtml, setButtonLoading } from "./ui.js";
 import { SentenceChunker } from "./ai/chunker.js";
 import { SpeechToText } from "./ai/stt.js";
+import { GroqSpeechToText } from "./ai/groq-stt.js";
 import { encodeCaption } from "./ai/types.js";
 import { AiOperator, type ChannelState, type ChannelStats } from "./ai/operator.js";
 
@@ -21,6 +22,9 @@ if (!grant) {
 }
 
 const isAi = grant.role === "ai-operator";
+// Groq records the mic itself, so it honours the device picker (Web Speech
+// always uses the system default and the picker would only pretend to work).
+const isGroq = grant.sttEngine === "groq";
 
 const $eventBanner = document.getElementById("event-banner") as HTMLDivElement;
 const $onAir = document.getElementById("on-air") as HTMLDivElement;
@@ -57,7 +61,7 @@ let expectDisconnect = false;
 let reloadScheduled = false;
 
 // AI captions for the human-translator path (self-STT of their own mic).
-let stt: SpeechToText | null = null;
+let stt: SpeechToText | GroqSpeechToText | null = null;
 let chunker: SentenceChunker | null = null;
 // AI operator pipeline (role = ai-operator).
 let operator: AiOperator | null = null;
@@ -82,10 +86,10 @@ if (isAi) {
   $sourceFixedName.textContent = `${grant.sourceLangFlag ?? ""} ${sourceName}`.trim();
   $sourceFixed.hidden = false;
   $aiChannels.hidden = false;
-  // Web Speech ignores deviceId, so a picker here would only pretend to work.
-  $mic.disabled = true;
-  $micRefresh.hidden = true;
-  $micSystemHint.hidden = false;
+  // Web Speech ignores deviceId, so a picker then would only pretend to work.
+  $mic.disabled = !isGroq;
+  $micRefresh.hidden = !isGroq;
+  $micSystemHint.hidden = isGroq;
   renderAiChannels();
 } else {
   $translatorDetail.textContent = `Translating into ${grant.flag ?? ""}  ${grant.languageName ?? ""}`;
@@ -169,9 +173,9 @@ function setBroadcastUI(broadcasting: boolean) {
   // The AI operator has no single live/mute audio track, so no mute toggle.
   $muteToggle.hidden = !broadcasting || isAi;
   // While broadcasting, the mic select is disabled — switching device
-  // mid-stream is jarring and rarely what you want. The AI path stays disabled
-  // because speech recognition cannot follow a chosen device at all.
-  $mic.disabled = broadcasting || isAi;
+  // mid-stream is jarring and rarely what you want. With Web Speech the AI
+  // path stays disabled because recognition cannot follow a chosen device.
+  $mic.disabled = broadcasting || (isAi && !isGroq);
   $micRefresh.disabled = broadcasting;
   $micHint.hidden = broadcasting;
 }
@@ -321,9 +325,9 @@ async function startPreviewLevelMeter() {
   stopLevelMeter();
   teardownPreview();
   try {
-    // The AI path always records the system default device, so preview the
-    // same one the recogniser will use.
-    const deviceId = isAi ? undefined : $mic.value || undefined;
+    // Web Speech always records the system default device, so preview that
+    // same one; Groq honours the picker like the broadcast path does.
+    const deviceId = isAi && !isGroq ? undefined : $mic.value || undefined;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: deviceId ? { deviceId: { exact: deviceId } } : true,
     });
@@ -407,11 +411,11 @@ async function connect() {
     syncMuteState();
     setStatus("");
     startLiveLevelMeter(track);
-    startTranslatorCaptions(room, grant.language!);
+    await startTranslatorCaptions(room, grant.language!);
   } catch (err) {
     console.error(err);
     setStatus(err instanceof Error ? err.message : "Could not start broadcast.", true);
-    teardownLive();
+    void teardownLive();
   } finally {
     setButtonLoading($connect, false);
   }
@@ -419,8 +423,32 @@ async function connect() {
 
 // Transcribe the translator's own speech and publish it as captions into their
 // channel. Audio still broadcasts even if the browser lacks speech recognition.
-function startTranslatorCaptions(r: Room, lang: string) {
-  if (!SpeechToText.isSupported()) return;
+async function startTranslatorCaptions(r: Room, lang: string) {
+  const handlers = {
+    onTranscript: (text: string, isFinal: boolean) => {
+      // Groq interims are revisable: previews only, never a committed caption.
+      if (isGroq && !isFinal) chunker?.pushInterim(text);
+      else chunker?.push(text);
+    },
+    onRestart: () => {
+      // The session is ending mid-sentence: keep the pending words, then reset.
+      chunker?.flush();
+      chunker?.reset();
+    },
+    // Audio keeps flowing, but listeners would silently lose captions. Say so
+    // instead of showing an on-air translator without subtitles.
+    onError: (msg: string) => setStatus(`Captions stopped: ${msg}. Audio is unaffected.`, true),
+  };
+  if (isGroq) {
+    if (!GroqSpeechToText.isSupported()) return;
+    // Record the very track that is broadcast: same device, and muting the
+    // broadcast mutes captions too (Web Speech keeps transcribing while muted).
+    const stream = track ? new MediaStream([track.mediaStreamTrack]) : undefined;
+    stt = new GroqSpeechToText(lang, { token: grant!.token!, stream }, handlers);
+  } else {
+    if (!SpeechToText.isSupported()) return;
+    stt = new SpeechToText(lang, handlers);
+  }
   chunker = new SentenceChunker((chunk) => {
     const payload = encodeCaption({
       type: "caption",
@@ -431,24 +459,14 @@ function startTranslatorCaptions(r: Room, lang: string) {
     });
     void r.localParticipant.publishData(payload, { reliable: true, topic: "captions" });
   });
-  stt = new SpeechToText(lang, {
-    onTranscript: (text) => chunker?.push(text),
-    onRestart: () => {
-      // The session is ending mid-sentence: keep the pending words, then reset.
-      chunker?.flush();
-      chunker?.reset();
-    },
-    // Audio keeps flowing, but listeners would silently lose captions. Say so
-    // instead of showing an on-air translator without subtitles.
-    onError: (msg) => setStatus(`Captions stopped: ${msg}. Audio is unaffected.`, true),
-  });
-  stt.start();
+  await stt.start();
 }
 
-function stopCaptions() {
-  stt?.stop();
+async function stopCaptions() {
+  // STT stops first: Groq uploads the pending segment and emits it, then the
+  // chunker flushes the last words. The room is still up at this point.
+  await stt?.stop();
   stt = null;
-  // Publish the last unfinished sentence; the room is still up at this point.
   chunker?.flush();
   chunker?.stop();
   chunker = null;
@@ -466,6 +484,7 @@ async function connectAi() {
       grant!,
       (code, state, detail) => setChannelState(code, state, detail),
       (code, stats) => setChannelStats(code, stats),
+      { deviceId: isGroq ? $mic.value || undefined : undefined },
     );
     await operator.start();
     setBroadcastUI(true);
@@ -480,11 +499,11 @@ async function connectAi() {
   }
 }
 
-function teardownLive() {
+async function teardownLive() {
   // Mark the upcoming room.disconnect() as intentional.
   expectDisconnect = true;
   stopLevelMeter();
-  stopCaptions();
+  await stopCaptions();
   if (operator) {
     void operator.stop();
     operator = null;
@@ -535,7 +554,7 @@ function handleNetworkError() {
   setOnAir("error");
   setBroadcastUI(false);
   stopLevelMeter();
-  stopCaptions();
+  void stopCaptions();
   if (operator) {
     void operator.stop();
     operator = null;
@@ -561,13 +580,13 @@ function handleNetworkError() {
 $reloadNow.addEventListener("click", () => location.reload());
 
 function signOut() {
-  teardownLive();
+  void teardownLive();
   clearTranslatorGrant();
   location.replace("/translator-login.html");
 }
 
 $connect.addEventListener("click", () => void (isAi ? connectAi() : connect()));
-$stop.addEventListener("click", () => teardownLive());
+$stop.addEventListener("click", () => void teardownLive());
 $signOut.addEventListener("click", () => signOut());
 
 $mute.addEventListener("change", async () => {

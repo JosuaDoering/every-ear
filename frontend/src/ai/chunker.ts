@@ -73,6 +73,12 @@ function softCut(tail: string): number {
 export class SentenceChunker {
   private buffer = "";
   private committedLen = 0;
+  /**
+   * Bytes of `buffer` backed by final (non-interim) STT text. Commits and
+   * flushes never cross this offset: interim text may drive previews, but a
+   * sentence is only published as final from final transcripts.
+   */
+  private finalLen = 0;
   private nextId = 1;
   private flushTimer: number | null = null;
   /** Previews sent for the sentence currently being spoken. */
@@ -89,19 +95,20 @@ export class SentenceChunker {
     private readonly onPreview?: (chunk: Chunk) => void,
   ) {}
 
-  /** Feed the full cumulative transcript seen so far. */
+  /** Feed the full cumulative transcript seen so far (final STT results). */
   push(text: string): void {
     // Web Speech revises interim results, so the committed prefix may change
     // wording without being a new session; only a transcript that shrank below
     // the offset means the engine restarted without reset() (offset now points
     // into unrelated text). Emit the old tail and start over in that case.
     if (text.length < this.committedLen) {
-      const tail = this.buffer.slice(this.committedLen);
+      const tail = this.buffer.slice(this.committedLen, this.finalLen);
       if (tail.trim().length > 0) this.commit(tail);
       this.committedLen = 0;
     }
 
     this.buffer = text;
+    this.finalLen = text.length;
 
     // One push can carry several finished sentences. Emit each one as soon as
     // it is long enough, so subtitles are not delayed until the speaker pauses.
@@ -113,7 +120,20 @@ export class SentenceChunker {
       this.commit(tail.slice(0, cut));
     }
 
-    if (this.buffer.slice(this.committedLen).trim().length > 0) this.armFlush();
+    if (this.buffer.slice(this.committedLen, this.finalLen).trim().length > 0) {
+      this.armFlush();
+    }
+    this.maybePreview();
+  }
+
+  /**
+   * Feed an interim (still revisable) transcript. It may extend the buffer so
+   * previews run ahead, but it must never commit a sentence: the Groq engine
+   * can reword interim text, and only final transcripts are authoritative.
+   */
+  pushInterim(text: string): void {
+    if (text.length < this.finalLen) return; // stale interim — ignore
+    this.buffer = text;
     this.maybePreview();
   }
 
@@ -140,10 +160,11 @@ export class SentenceChunker {
   /**
    * Emit whatever is still pending. Call before `reset()`: the last words
    * before an STT restart carry no terminator and would otherwise be dropped.
+   * Only final text is emitted — an unconfirmed interim tail is dropped.
    */
   flush(): void {
     this.clearFlush();
-    const tail = this.buffer.slice(this.committedLen);
+    const tail = this.buffer.slice(this.committedLen, this.finalLen);
     if (tail.trim().length > 0) this.commit(tail);
   }
 
@@ -151,6 +172,7 @@ export class SentenceChunker {
   reset(): void {
     this.buffer = "";
     this.committedLen = 0;
+    this.finalLen = 0;
     this.clearPreviewState();
     this.clearFlush();
   }
@@ -172,7 +194,9 @@ export class SentenceChunker {
     this.clearFlush();
     this.flushTimer = window.setTimeout(() => {
       this.flushTimer = null;
-      const tail = this.buffer.slice(this.committedLen);
+      // The buffer may have grown past finalLen with interim text since the
+      // timer was armed; only the final-backed tail may be committed.
+      const tail = this.buffer.slice(this.committedLen, this.finalLen);
       if (speechLen(tail) >= MIN_CHUNK_LEN) {
         this.commit(tail);
       }
