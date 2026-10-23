@@ -8,6 +8,7 @@ import { livekitUrl } from "../livekit.js";
 import type { AiLanguageGrant } from "../session.js";
 import { SentenceChunker } from "./chunker.js";
 import { SpeechToText } from "./stt.js";
+import { GroqSpeechToText } from "./groq-stt.js";
 import { encodeCaption, type CaptionMessage } from "./types.js";
 
 export type ChannelState = "connecting" | "live" | "error";
@@ -92,7 +93,7 @@ async function streamTranslate(
 
 export class AiOperator {
   private channels: Channel[] = [];
-  private stt: SpeechToText | null = null;
+  private stt: SpeechToText | GroqSpeechToText | null = null;
   private chunker: SentenceChunker | null = null;
   private contexts = new Map<string, string[]>();
   private lastInterim = new Map<string, number>();
@@ -119,9 +120,11 @@ export class AiOperator {
       aiLanguages?: AiLanguageGrant[];
       name: string;
       sourceLang?: string;
+      sttEngine?: string;
     },
     private readonly onStatus: (code: string, state: ChannelState, detail?: string) => void,
     private readonly onStats?: (code: string, stats: ChannelStats) => void,
+    private readonly opts: { deviceId?: string } = {},
   ) {}
 
   private get sourceLang(): string {
@@ -130,13 +133,21 @@ export class AiOperator {
     return this.grant.sourceLang ?? "";
   }
 
+  private get sttEngine(): "web-speech" | "groq" {
+    return this.grant.sttEngine === "groq" ? "groq" : "web-speech";
+  }
+
   async start(): Promise<void> {
     const langs = this.grant.aiLanguages ?? [];
     if (langs.length === 0) throw new Error("This event has no AI languages configured.");
     if (!this.sourceLang) {
       throw new Error("This event has no AI source language — ask the organizer to set it.");
     }
-    if (!SpeechToText.isSupported()) {
+    if (this.sttEngine === "groq") {
+      if (!GroqSpeechToText.isSupported()) {
+        throw new Error("Audio recording is not supported in this browser.");
+      }
+    } else if (!SpeechToText.isSupported()) {
       throw new Error("Speech recognition is not supported in this browser (use Chrome or Edge).");
     }
 
@@ -180,19 +191,32 @@ export class AiOperator {
       (chunk) => this.onChunk(chunk.id, chunk.text),
       (chunk) => this.onPreviewChunk(chunk.id, chunk.text),
     );
-    this.stt = new SpeechToText(this.sourceLang, {
-      onTranscript: (text) => this.chunker?.push(text),
+    const engine = this.sttEngine;
+    const handlers = {
+      // Groq interims are revisable: they drive previews only, finals commit.
+      onTranscript: (text: string, isFinal: boolean) => {
+        if (engine === "groq" && !isFinal) this.chunker?.pushInterim(text);
+        else this.chunker?.push(text);
+      },
       onRestart: () => {
         this.chunker?.flush();
         this.chunker?.reset();
       },
       // Without this the channel rows keep saying "live" while recognition has
       // stopped for good (mic revoked, engine error) and nothing is published.
-      onError: (msg) => {
+      onError: (msg: string) => {
         for (const ch of this.channels) this.onStatus(ch.code, "error", msg);
       },
-    });
-    this.stt.start();
+    };
+    this.stt =
+      engine === "groq"
+        ? new GroqSpeechToText(
+            this.sourceLang,
+            { token: langs[0]!.token, deviceId: this.opts.deviceId },
+            handlers,
+          )
+        : new SpeechToText(this.sourceLang, handlers);
+    await this.stt.start();
   }
 
   private onChunk(id: number, text: string): void {
@@ -410,11 +434,13 @@ export class AiOperator {
   async stop(): Promise<void> {
     // Emit the last, still-unfinished sentence before tearing the rooms down:
     // stopping the operator otherwise silently drops the speaker's last words.
-    // The translation it starts is asynchronous, so give it a moment before
+    // STT stops first (Groq uploads the pending segment and emits it), then
+    // the chunker flushes whatever final text is still pending. The
+    // translations this starts are asynchronous, so give them a moment before
     // disconnecting (bounded — stopping must still feel immediate).
-    this.chunker?.flush();
-    this.stt?.stop();
+    await this.stt?.stop();
     this.stt = null;
+    this.chunker?.flush();
     this.chunker?.stop();
     this.chunker = null;
     await this.waitForIdle(2500);

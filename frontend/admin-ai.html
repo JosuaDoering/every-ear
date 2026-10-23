@@ -85,9 +85,77 @@
         <div class="settings-section-head">
           <span class="step-badge">2</span>
           <div>
+            <h2>Speech-to-text</h2>
+            <p class="hint">
+              Turns the AI operator's voice into the text that is then translated.
+              Groq Whisper runs on Groq's servers, works in every modern browser
+              (including Firefox and Safari) and follows the chosen microphone —
+              the API key stays on the server.
+            </p>
+          </div>
+        </div>
+
+        <div class="status-grid">
+          <div class="status-card">
+            <span class="status-label">Engine</span>
+            <code id="stt-engine-current">—</code>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Groq API key</span>
+            <code id="groq-key-masked">—</code>
+          </div>
+          <div class="status-card">
+            <span class="status-label">Whisper model</span>
+            <code id="groq-model-current">—</code>
+          </div>
+        </div>
+
+        <form id="stt-form" class="row-stack">
+          <label>
+            Engine
+            <select id="stt-engine">
+              <option value="web-speech">Browser (Web Speech API) — free, Chrome/Edge only</option>
+              <option value="groq">Groq Whisper — recommended, works everywhere</option>
+            </select>
+            <span class="hint">
+              Web Speech needs no API key but only works in Chrome/Edge and always
+              records the system default microphone.
+            </span>
+          </label>
+
+          <div id="groq-fields" class="row-stack" hidden>
+            <label>
+              Groq API key
+              <input id="groq-key" type="password" placeholder="gsk_…" autocomplete="off" />
+              <span class="hint" id="groq-key-hint">
+                Paste a key from console.groq.com/keys. It is only used server-side.
+              </span>
+            </label>
+            <label>
+              Whisper model
+              <select id="groq-model">
+                <option value="whisper-large-v3-turbo">whisper-large-v3-turbo — fastest, cheapest (recommended)</option>
+                <option value="whisper-large-v3">whisper-large-v3 — highest accuracy</option>
+              </select>
+              <span class="hint">
+                Turbo transcribes far faster than realtime — best for live captions.
+              </span>
+            </label>
+          </div>
+
+          <div class="settings-actions">
+            <button type="submit" id="stt-submit" class="primary"><span>Save speech-to-text settings</span></button>
+          </div>
+        </form>
+      </section>
+
+      <section class="admin-block">
+        <div class="settings-section-head">
+          <span class="step-badge">3</span>
+          <div>
             <h2>AI languages</h2>
             <p class="hint">
-              This page configures the provider only. Which languages an event offers —
+              This page configures the providers only. Which languages an event offers —
               and the language the AI operator speaks — is set per event.
             </p>
           </div>

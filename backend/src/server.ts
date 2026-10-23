@@ -32,6 +32,7 @@ import {
 import { startCertRenewal } from "./acme/renewal.js";
 import { loadAiConfig } from "./ai/config.js";
 import { translateStream, type TranslateError } from "./ai/translate.js";
+import { transcribeAudio, type SttError } from "./ai/transcribe.js";
 
 /** Read a positive integer from the environment, falling back to `fallback`. */
 function envInt(name: string, fallback: number): number {
@@ -443,6 +444,59 @@ async function start() {
       }
     }
   });
+
+  // ---- AI speech-to-text (Groq Whisper, proxied server-side) ---------------
+
+  app.post(
+    "/api/ai/transcribe",
+    // One request per speech segment (every few seconds per operator), so a
+    // generous cap — the Groq semaphore/breaker are the real upstream guard.
+    { config: { rateLimit: { max: 600, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      // Transcription spends the server's Groq key, so the caller must hold a
+      // publisher token (translator or AI operator) for an active event.
+      const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
+      if (!bearer) return reply.code(401).send({ error: "authorization required" });
+      let grant: VerifiedPublisher;
+      try {
+        grant = await verifyPublisherToken(bearer);
+      } catch {
+        return reply.code(401).send({ error: "invalid token" });
+      }
+      const event = await getEvent(grant.eventId);
+      if (!event || event.active === false) {
+        return reply.code(403).send({ error: "event not available" });
+      }
+
+      // The spoken language is derived server-side: an AI operator speaks the
+      // event's source language, a human translator their channel language.
+      // Never trust a client-supplied code — it would silently degrade
+      // accuracy when it disagrees with the event.
+      const language = grant.identity.startsWith("ai-")
+        ? event.aiSourceLang
+        : grant.language;
+      if (!language) {
+        return reply.code(409).send({ error: "no source language configured for this event" });
+      }
+
+      const file = await req.file();
+      if (!file) return reply.code(400).send({ error: "audio file required" });
+      const audio = await file.toBuffer();
+      if (file.file.truncated) {
+        return reply.code(413).send({ error: "audio segment too large" });
+      }
+
+      try {
+        const text = await transcribeAudio(audio, file.mimetype, language);
+        return { text };
+      } catch (err) {
+        const e = err as SttError;
+        return reply
+          .code(typeof e?.status === "number" ? e.status : 502)
+          .send({ error: e?.message ?? "transcription failed" });
+      }
+    },
+  );
 
   registerBackgroundRoutes(app);
   await app.register(adminPlugin, { prefix: "/api/admin" });
